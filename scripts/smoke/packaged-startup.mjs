@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 const cwd = process.cwd();
 const args = new Map(
-  process.argv.slice(2).map((arg) => {
+  process.argv.slice(2).filter((arg) => arg !== '--').map((arg) => {
     const [key, value = ''] = arg.split('=');
     return [key.replace(/^--/, ''), value];
   }),
@@ -87,10 +87,22 @@ function findExecutable(platform, releaseRoot) {
   return target;
 }
 
+function getLaunchArgs(platform) {
+  if (platform !== 'linux') {
+    return [];
+  }
+
+  // CI smoke runs the unpacked Electron binary before the Linux package
+  // post-install script can set chrome-sandbox to root:4755. Without this,
+  // Chromium aborts before the app reaches its startup smoke exit path.
+  return ['--no-sandbox'];
+}
+
 async function main() {
   const platform = normalizePlatform(platformArg || process.platform);
   const executable = findExecutable(platform, releaseDir);
-  const child = spawn(executable, [], {
+  const launchArgs = getLaunchArgs(platform);
+  const child = spawn(executable, launchArgs, {
     cwd: path.dirname(executable),
     env: {
       ...process.env,

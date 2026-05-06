@@ -50,6 +50,24 @@ describe('validateApiKeyWithProvider', () => {
     );
   });
 
+  it('accepts non-empty DashScope keys without generating a validation image', async () => {
+    const { validateApiKeyWithProvider } = await import('@electron/services/providers/provider-validation');
+
+    const result = await validateApiKeyWithProvider('dashscope', 'sk-dashscope-test');
+
+    expect(result).toMatchObject({ valid: true });
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty DashScope keys', async () => {
+    const { validateApiKeyWithProvider } = await import('@electron/services/providers/provider-validation');
+
+    const result = await validateApiKeyWithProvider('dashscope', '   ');
+
+    expect(result).toMatchObject({ valid: false, error: 'API key is required' });
+    expect(proxyAwareFetch).not.toHaveBeenCalled();
+  });
+
   it('falls back to /responses for openai-responses when /models is unavailable', async () => {
     proxyAwareFetch
       .mockResolvedValueOnce(

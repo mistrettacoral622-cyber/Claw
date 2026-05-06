@@ -7,6 +7,23 @@ import type {
 
 export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   {
+    id: 'dashscope',
+    name: 'DashScope',
+    icon: 'D',
+    placeholder: 'sk-...',
+    model: 'Wan Image',
+    requiresApiKey: true,
+    defaultBaseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    showBaseUrl: true,
+    apiKeyUrl: 'https://bailian.console.aliyun.com/',
+    category: 'official',
+    envVar: 'DASHSCOPE_API_KEY',
+    supportedAuthModes: ['api_key'],
+    defaultAuthMode: 'api_key',
+    supportsMultipleAccounts: false,
+    supportsChat: false,
+  },
+  {
     id: 'anthropic',
     name: 'Anthropic',
     icon: '🤖',

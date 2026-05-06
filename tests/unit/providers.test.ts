@@ -5,6 +5,7 @@ import {
   buildAgentModelRef,
   PROVIDER_TYPES,
   PROVIDER_TYPE_INFO,
+  SETUP_PROVIDERS,
   getProviderDocsUrl,
   resolveProviderApiKeyForSave,
   resolveProviderModelForSave,
@@ -53,6 +54,28 @@ describe('provider metadata', () => {
     });
   });
 
+  it('exposes DashScope as an image-generation-only provider', () => {
+    expect(PROVIDER_TYPES).toContain('dashscope');
+    expect(BUILTIN_PROVIDER_TYPES).toContain('dashscope');
+    expect(getProviderEnvVar('dashscope')).toBe('DASHSCOPE_API_KEY');
+    expect(getProviderConfig('dashscope')).toBeUndefined();
+
+    expect(PROVIDER_TYPE_INFO).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'dashscope',
+          name: 'DashScope',
+          requiresApiKey: true,
+          defaultBaseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+          showBaseUrl: true,
+          apiKeyUrl: 'https://bailian.console.aliyun.com/',
+          supportsChat: false,
+        }),
+      ]),
+    );
+    expect(SETUP_PROVIDERS.map((provider) => provider.id)).not.toContain('dashscope');
+  });
+
   it('uses a single canonical env key for moonshot provider', () => {
     expect(getProviderEnvVar('moonshot')).toBe('MOONSHOT_API_KEY');
     expect(getProviderEnvVars('moonshot')).toEqual(['MOONSHOT_API_KEY']);
@@ -66,7 +89,7 @@ describe('provider metadata', () => {
 
   it('keeps builtin provider sources in sync', () => {
     expect(BUILTIN_PROVIDER_TYPES).toEqual(
-      expect.arrayContaining(['anthropic', 'openai', 'google', 'openrouter', 'ark', 'moonshot', 'siliconflow', 'minimax-portal', 'minimax-portal-cn', 'qwen-portal', 'ollama'])
+      expect.arrayContaining(['anthropic', 'openai', 'google', 'openrouter', 'ark', 'moonshot', 'siliconflow', 'dashscope', 'minimax-portal', 'minimax-portal-cn', 'qwen-portal', 'ollama'])
     );
   });
 

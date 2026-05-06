@@ -229,6 +229,14 @@ export class ProviderService {
 
   async setDefaultAccount(accountId: string): Promise<void> {
     await ensureProviderStoreMigrated();
+    const account = await getProviderAccount(accountId);
+    if (!account) {
+      throw new Error('Provider account not found');
+    }
+    const definition = getProviderDefinition(account.vendorId);
+    if (definition?.supportsChat === false) {
+      throw new Error(`${definition.name} is only used for image generation and cannot be the default chat provider`);
+    }
     await setDefaultProviderAccount(accountId);
     await setDefaultProvider(accountId);
   }

@@ -17,6 +17,7 @@ export const PROVIDER_TYPES = [
   'ark',
   'moonshot',
   'siliconflow',
+  'dashscope',
   'minimax-portal',
   'minimax-portal-cn',
   'qwen-portal',
@@ -36,6 +37,7 @@ export const BUILTIN_PROVIDER_TYPES = [
   'ark',
   'moonshot',
   'siliconflow',
+  'dashscope',
   'minimax-portal',
   'minimax-portal-cn',
   'qwen-portal',
@@ -81,6 +83,7 @@ export interface ProviderTypeInfo {
   apiKeyUrl?: string;
   docsUrl?: string;
   docsUrlZh?: string;
+  supportsChat?: boolean;
 }
 
 export type ProviderAuthMode =
@@ -129,6 +132,7 @@ import { providerIcons } from '@/assets/providers';
 
 /** All supported provider types with UI metadata */
 export const PROVIDER_TYPE_INFO: ProviderTypeInfo[] = [
+  { id: 'dashscope', name: 'DashScope', icon: 'D', placeholder: 'sk-...', model: 'Wan Image', requiresApiKey: true, defaultBaseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', showBaseUrl: true, apiKeyUrl: 'https://bailian.console.aliyun.com/', docsUrl: 'https://help.aliyun.com/zh/model-studio/', supportsChat: false },
   {
     id: 'anthropic',
     name: 'Anthropic',
@@ -197,7 +201,7 @@ export function shouldInvertInDark(_type: ProviderType | string): boolean {
 }
 
 /** Provider list shown in the Setup wizard */
-export const SETUP_PROVIDERS = PROVIDER_TYPE_INFO;
+export const SETUP_PROVIDERS = PROVIDER_TYPE_INFO.filter((provider) => provider.supportsChat !== false);
 
 /** Get type info by provider type id */
 export function getProviderTypeInfo(type: ProviderType): ProviderTypeInfo | undefined {

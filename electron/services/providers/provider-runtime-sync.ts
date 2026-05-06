@@ -8,6 +8,7 @@ import { getProviderSecret } from '../secrets/secret-store';
 import type { ProviderConfig } from '../../utils/secure-storage';
 import { getAllProviders, getApiKey, getDefaultProvider, getProvider } from '../../utils/secure-storage';
 import { getProviderConfig, getProviderDefaultModel } from '../../utils/provider-registry';
+import { getProviderDefinition } from '../../shared/providers/registry';
 import { readOpenClawConfig, writeOpenClawConfig } from '../../utils/channel-config';
 import {
   removeProviderKeyFromOpenClaw,
@@ -537,6 +538,10 @@ export async function syncDefaultProviderToRuntime(
 ): Promise<void> {
   const provider = await getProvider(providerId);
   if (!provider) {
+    return;
+  }
+  if (getProviderDefinition(provider.type)?.supportsChat === false) {
+    logger.warn(`Skipping default model sync for non-chat provider "${provider.type}"`);
     return;
   }
 

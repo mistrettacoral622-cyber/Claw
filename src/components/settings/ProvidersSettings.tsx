@@ -159,7 +159,7 @@ export function ProvidersSettings() {
       }, effectiveApiKey);
 
       // Auto-set as default if no default is currently configured
-      if (!defaultAccountId) {
+      if (!defaultAccountId && vendor?.supportsChat !== false) {
         await setDefaultAccount(id);
       }
 
@@ -322,6 +322,7 @@ function ProviderCard({
   const providerDocsUrl = getProviderDocsUrl(typeInfo, i18n.language);
   const showModelIdField = shouldShowProviderModelId(typeInfo, devModeUnlocked);
   const canEditModelConfig = Boolean(typeInfo?.showBaseUrl || showModelIdField);
+  const canSetAsDefault = typeInfo?.supportsChat !== false && vendor?.supportsChat !== false;
 
   useEffect(() => {
     if (isEditing) {
@@ -335,7 +336,10 @@ function ProviderCard({
     }
   }, [isEditing, account.baseUrl, account.fallbackModels, account.fallbackAccountIds, account.model, account.apiProtocol]);
 
-  const fallbackOptions = allProviders.filter((candidate) => candidate.account.id !== account.id);
+  const fallbackOptions = allProviders.filter((candidate) =>
+    candidate.account.id !== account.id
+    && candidate.vendor?.supportsChat !== false
+  );
 
   const toggleFallbackProvider = (providerId: string) => {
     setFallbackProviderIds((current) => (
@@ -490,7 +494,7 @@ function ProviderCard({
 
         {!isEditing && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            {!isDefault && (
+            {!isDefault && canSetAsDefault && (
               <Button
                 variant="ghost"
                 size="icon"

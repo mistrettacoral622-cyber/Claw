@@ -138,6 +138,7 @@ Skills 页面可展示来自多个 OpenClaw 来源的技能（托管目录、wor
 - `image-search`、`find-skills`、`self-improving-agent` 不需要 API Key
 
 聊天中的图片理解需要两种能力之一：当前活动模型具备视觉能力，或者已配置 OpenClaw 的图像分析回退路径（例如 OpenAI / Anthropic / Google / MiniMax 的图像模型或 provider auth）。KTClaw 现在会在缺乏这类能力时发出提示，同时更强地引导 agent 在浏览器、截图、多步任务等场景主动调用对应的 local skills / tools，而不是停在手动指令上。
+图片生成使用在 **设置 -> AI 供应商** 中配置的 DashScope 账号，或 `DASHSCOPE_API_KEY` 环境变量。DashScope 仅用于生图，不会出现在设置向导的聊天默认供应商列表中。
 本地搜图现在通过预装的 `image-search` skill 和 Host API 路由提供，三端通用，不依赖 macOS Spotlight、Windows 索引或 Linux 桌面搜索。它默认按文件修改时间解析“昨天 / 上周末 / 上月”等时间条件，并支持“昨天创建的猫的图片”“上周末在海边拍的照片”“上月会议截图”等时间 + 内容组合查询。视觉语义搜图默认关闭；如需启用 `--semantic`，需要设置 `KTCLAW_IMAGE_SEARCH_ENABLE_SEMANTIC=1`。启用后会优先使用已有本地/缓存的 `Xenova/mobileclip_s0` 模型，只有同时设置 `KTCLAW_IMAGE_SEARCH_ALLOW_REMOTE_MODELS=1` 时才允许下载。启动时的后台向量自动索引默认关闭；如需自动扫描系统 Pictures/图片目录，请设置 `KTCLAW_ENABLE_IMAGE_SEARCH_AUTO_INDEX=1`。允许远程加载时会优先尝试 ModelScope，然后是 hf-mirror，最后才是 Hugging Face。
 
 ### 🔐 安全的供应商集成

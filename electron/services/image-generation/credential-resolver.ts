@@ -14,7 +14,8 @@ function looksLikeDashScopeAccount(account: ProviderAccount): boolean {
   const label = account.label.toLowerCase();
   const model = account.model?.toLowerCase() || '';
   const baseUrl = account.baseUrl?.toLowerCase() || '';
-  return baseUrl.includes('dashscope')
+  return account.vendorId === 'dashscope'
+    || baseUrl.includes('dashscope')
     || model === 'wan2.6-t2i'
     || label.includes('dashscope')
     || account.label.includes('通义万相');
@@ -93,7 +94,7 @@ export function redactDashScopeError(value: unknown): string {
     text = text.replace(bearerPattern(token), '[REDACTED]');
   }
 
-  text = text.replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, 'Bearer [REDACTED]');
+  text = text.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]');
   return text;
 }
 

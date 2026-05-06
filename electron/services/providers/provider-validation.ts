@@ -8,6 +8,7 @@ type ValidationProfile =
   | 'google-query-key'
   | 'anthropic-header'
   | 'openrouter'
+  | 'dashscope-image-generation'
   | 'none';
 
 type ValidationResult = { valid: boolean; error?: string; status?: number };
@@ -113,6 +114,8 @@ function getValidationProfile(
       return 'google-query-key';
     case 'openrouter':
       return 'openrouter';
+    case 'dashscope':
+      return 'dashscope-image-generation';
     case 'ollama':
       return 'none';
     default:
@@ -400,6 +403,8 @@ export async function validateApiKeyWithProvider(
         return await validateAnthropicHeaderKey(providerType, trimmedKey, resolvedBaseUrl);
       case 'openrouter':
         return await validateOpenRouterKey(providerType, trimmedKey);
+      case 'dashscope-image-generation':
+        return { valid: true };
       default:
         return { valid: false, error: `Unsupported validation profile for provider: ${providerType}` };
     }

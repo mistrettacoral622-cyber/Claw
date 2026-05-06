@@ -9,6 +9,7 @@ export const PROVIDER_TYPES = [
   'ark',
   'moonshot',
   'siliconflow',
+  'dashscope',
   'minimax-portal',
   'minimax-portal-cn',
   'qwen-portal',
@@ -27,6 +28,7 @@ export const BUILTIN_PROVIDER_TYPES = [
   'ark',
   'moonshot',
   'siliconflow',
+  'dashscope',
   'minimax-portal',
   'minimax-portal-cn',
   'qwen-portal',
@@ -90,6 +92,7 @@ export interface ProviderTypeInfo {
   isOAuth?: boolean;
   supportsApiKey?: boolean;
   apiKeyUrl?: string;
+  supportsChat?: boolean;
 }
 
 export interface ProviderModelEntry extends Record<string, unknown> {
