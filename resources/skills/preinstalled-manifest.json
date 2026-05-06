@@ -52,6 +52,7 @@
       "repoPath": "skills/pskoett/self-improving-agent",
       "ref": "main",
       "version": "main",
+      "optional": true,
       "autoEnable": true
     },
     {
@@ -76,6 +77,7 @@
       "repoPath": "skills/ypw757/bocha-skill",
       "ref": "main",
       "version": "main",
+      "optional": true,
       "autoEnable": true
     }
   ]

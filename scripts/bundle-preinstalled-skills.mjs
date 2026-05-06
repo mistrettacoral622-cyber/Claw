@@ -104,6 +104,10 @@ function isWindowsPathCompatibilityError(error) {
     && message.includes('invalid path');
 }
 
+function isOptionalGroup(group) {
+  return group.entries.every((entry) => entry.optional === true);
+}
+
 export async function main() {
   echo('Bundling preinstalled skills...');
   const manifestSkills = loadManifest();
@@ -156,6 +160,10 @@ export async function main() {
     } catch (error) {
       if (isWindowsPathCompatibilityError(error)) {
         echo(`   WARN skipped ${group.repo} on Windows due to invalid upstream path names`);
+        continue;
+      }
+      if (isOptionalGroup(group)) {
+        echo(`   WARN skipped optional preinstalled skills from ${group.repo}: ${error?.message || error}`);
         continue;
       }
       throw error;
