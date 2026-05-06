@@ -288,6 +288,12 @@ describe('ImageIndexManager', () => {
     });
   });
 
+  it('getVectorStore() returns the injected vector store', () => {
+    const manager = new ImageIndexManager(mockStore as any);
+
+    expect(manager.getVectorStore()).toBe(mockStore);
+  });
+
   it('shutdown() terminates worker and closes vector store', () => {
     const manager = new ImageIndexManager(mockStore as any);
     manager.startIndexing(['/photos']);

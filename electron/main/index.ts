@@ -50,8 +50,8 @@ import { McpRuntimeManager } from '../services/mcp/runtime-manager';
 import { SessionRuntimeManager, type RuntimeSessionRecord } from '../services/session-runtime-manager';
 import { shouldAllowCameraPermission } from './media-permissions';
 import { scheduleImageSearchSemanticPrewarm } from '../services/image-search/prewarm';
+import { scheduleImageSearchAutoIndex } from '../services/image-search/auto-index';
 import { getImageIndexManager } from '../services/image-search/image-index-manager';
-import { getDefaultImageDirectories } from '../services/image-search/image-directories';
 import { loadMcpConfig } from '../api/routes/mcp';
 import { resolveWindowChromeOptions } from './window-chrome';
 import { createInitialWindowPresenter } from './initial-window-presenter';
@@ -649,19 +649,10 @@ async function initialize(): Promise<void> {
     // runs when KTCLAW_ENABLE_IMAGE_SEARCH_PREWARM=1 is set.
     scheduleImageSearchSemanticPrewarm();
 
-    // Auto-start image indexing (D-02: silent background, D-01: auto-detect Pictures)
-    setTimeout(() => {
-      try {
-        const dirs = getDefaultImageDirectories();
-        if (dirs.length > 0) {
-          const manager = getImageIndexManager();
-          manager.startIndexing(dirs);
-          logger.info(`Auto-indexing started for ${dirs.length} directory(s): ${dirs.join(', ')}`);
-        }
-      } catch (err) {
-        logger.warn('Auto-indexing startup failed:', err);
-      }
-    }, 10000); // 10s delay to let app settle
+    // Semantic image indexing is opt-in. Loading MobileCLIP and native vector
+    // extensions during every startup is expensive and has proven unstable on
+    // some Windows machines, so only run it when explicitly requested.
+    scheduleImageSearchAutoIndex();
   }
 
   // Bridge gateway and host-side events before any auto-start logic runs, so

@@ -391,7 +391,7 @@ export class ImageIndexManager {
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: { stabilityThreshold: 2000 },
-      ignored: /(^|[\/\\])\../,
+      ignored: /(^|[/\\])\../,
       depth: 20,
     });
 
@@ -467,6 +467,8 @@ export class ImageIndexManager {
   }
 
   /**
+   * Exposes the underlying vector store for image search queries.
+   */
   getVectorStore(): ImageVectorStore {
     return this.vectorStore;
   }
