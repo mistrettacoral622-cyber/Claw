@@ -29,7 +29,7 @@ function getBundledUvPath(): string {
  * pick up a system-wide uv that may be a different (possibly broken) version.
  * In dev we fall through to the system PATH for convenience.
  */
-function resolveUvBin(): { bin: string; source: 'bundled' | 'path' | 'bundled-fallback' } {
+function resolveUvBin(): { bin: string; source: 'bundled' | 'path' | 'bundled-fallback' | 'missing' } {
   const bundled = getBundledUvPath();
 
   if (app.isPackaged) {
@@ -41,22 +41,26 @@ function resolveUvBin(): { bin: string; source: 'bundled' | 'path' | 'bundled-fa
 
   // Dev mode or missing bundled binary — check system PATH
   const found = findUvInPathSync();
-  if (found) return { bin: 'uv', source: 'path' };
+  if (found) return { bin: found, source: 'path' };
 
   if (existsSync(bundled)) {
     return { bin: bundled, source: 'bundled-fallback' };
   }
 
-  return { bin: 'uv', source: 'path' };
+  return { bin: bundled, source: 'missing' };
 }
 
-function findUvInPathSync(): boolean {
+function findUvInPathSync(): string | null {
   try {
     const cmd = process.platform === 'win32' ? 'where.exe uv' : 'which uv';
-    execSync(cmd, { stdio: 'ignore', timeout: 5000, windowsHide: true });
-    return true;
+    const output = execSync(cmd, { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    const firstMatch = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    return firstMatch || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -65,10 +69,10 @@ function findUvInPathSync(): boolean {
  */
 export async function checkUvInstalled(): Promise<boolean> {
   const { bin, source } = resolveUvBin();
-  if (source === 'bundled' || source === 'bundled-fallback') {
+  if (source === 'bundled' || source === 'bundled-fallback' || source === 'missing') {
     return existsSync(bin);
   }
-  return findUvInPathSync();
+  return findUvInPathSync() !== null;
 }
 
 /**
@@ -88,7 +92,10 @@ export async function installUv(): Promise<void> {
  * Check if a managed Python 3.12 is ready and accessible
  */
 export async function isPythonReady(): Promise<boolean> {
-  const { bin: uvBin } = resolveUvBin();
+  const { bin: uvBin, source } = resolveUvBin();
+  if (source === 'missing') {
+    return false;
+  }
   const useShell = needsWinShell(uvBin);
 
   return new Promise<boolean>((resolve) => {
@@ -175,6 +182,9 @@ async function runPythonInstall(
  */
 export async function setupManagedPython(): Promise<void> {
   const { bin: uvBin, source } = resolveUvBin();
+  if (source === 'missing') {
+    throw new Error(`uv not found in system PATH and bundled binary missing at ${uvBin}`);
+  }
   const uvEnv = await getUvMirrorEnv();
   const hasMirror = Object.keys(uvEnv).length > 0;
 

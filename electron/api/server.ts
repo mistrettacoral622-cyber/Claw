@@ -43,6 +43,7 @@ const routeDefinitions: LazyRouteDefinition[] = [
   { prefixes: ['/api/channels'], loader: memoizeRouteLoader('channels', () => import('./routes/channels').then((mod) => mod.handleChannelRoutes)) },
   { prefixes: ['/api/skills'], loader: memoizeRouteLoader('skills', () => import('./routes/skills').then((mod) => mod.handleSkillRoutes)) },
   { prefixes: ['/api/files'], loader: memoizeRouteLoader('files', () => import('./routes/files').then((mod) => mod.handleFileRoutes)) },
+  { prefixes: ['/api/image-generation'], loader: memoizeRouteLoader('image-generation', () => import('./routes/image-generation').then((mod) => mod.handleImageGenerationRoutes)) },
   { prefixes: ['/api/image-search'], loader: memoizeRouteLoader('image-search', () => import('./routes/image-search').then((mod) => mod.handleImageSearchRoutes)) },
   { prefixes: ['/api/sessions'], loader: memoizeRouteLoader('sessions', () => import('./routes/sessions').then((mod) => mod.handleSessionRoutes)) },
   { prefixes: ['/api/cron'], loader: memoizeRouteLoader('cron', () => import('./routes/cron').then((mod) => mod.handleCronRoutes)) },

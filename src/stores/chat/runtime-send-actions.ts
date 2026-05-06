@@ -28,9 +28,22 @@ function isImageUnderstandingErrorMessage(message: string): boolean {
     || normalized.includes('content type');
 }
 
+function isImageNetworkErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('network connection error')
+    || normalized.includes('network error')
+    || normalized.includes('llm request failed')
+    || normalized.includes('fetch failed')
+    || normalized.includes('econn')
+    || normalized.includes('timeout');
+}
+
 function normalizeSendErrorMessage(message: string, hasImages: boolean): string {
   if (hasImages && isImageUnderstandingErrorMessage(message)) {
     return '该模型暂时不能识别图片哦。';
+  }
+  if (hasImages && isImageNetworkErrorMessage(message)) {
+    return '拍照识别失败：当前图片识别请求的网络或 Provider 连接不可用。请检查视觉模型、API Key、代理或网络连接后重试。';
   }
   return message;
 }

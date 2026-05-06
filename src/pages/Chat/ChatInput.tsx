@@ -8,7 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, FolderOpen } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, FolderOpen, Camera, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,7 +33,9 @@ import {
   isLeaderOnlyAgent,
   resolveReportingLeader,
 } from '@/lib/team-chat-access';
+import { CAMERA_REQUEST_ACCEPTED_UI_EVENT, type CameraRequestDetail } from '../../../shared/camera-request';
 import { getChatInputSlashMatches, isSlashCommandPrefixInput, parseChatInputSlashCommand } from './slash-commands';
+import { CameraCaptureModal } from './CameraCaptureModal';
 
 const CHAT_REQUEST_FILE_UPLOAD_EVENT = 'chat:request-file-upload';
 const CHAT_UPLOAD_PENDING_KEY = 'ktclaw:pending-upload';
@@ -131,6 +133,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const currentSessionKey = useChatStore((s) => s.currentSessionKey);
   const messages = useChatStore((s) => s.messages);
   const newSession = useChatStore((s) => s.newSession);
+  const generateImage = useChatStore((s) => ('generateImage' in s && typeof s.generateImage === 'function' ? s.generateImage : undefined));
   const currentAgent = useMemo(
     () => agents.find((agent) => agent.id === currentAgentId) ?? null,
     [agents, currentAgentId],
@@ -188,6 +191,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     [composerDraft, slashMatches.length],
   );
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraRequestedByAgent, setCameraRequestedByAgent] = useState(false);
+  const [cameraRequestReason, setCameraRequestReason] = useState<string | undefined>(undefined);
+  const [imagePromptError, setImagePromptError] = useState<string | null>(null);
   const activeSlashCommand = showSlashMenu
     ? (slashMatches[Math.min(slashActiveIndex, slashMatches.length - 1)] ?? null)
     : null;
@@ -200,6 +207,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
 
   const applySlashCompletion = useCallback((commandName: string) => {
     setComposerDraft(`${commandName} `);
+    setImagePromptError(null);
     setSlashActiveIndex(0);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
@@ -344,6 +352,23 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     };
   }, [pickFiles]);
 
+  useEffect(() => {
+    const onCameraRequestAccepted = (event: Event) => {
+      const detail = (event as CustomEvent<CameraRequestDetail>).detail;
+      if (!detail || detail.sessionKey !== currentSessionKey) {
+        return;
+      }
+      setCameraRequestedByAgent(true);
+      setCameraRequestReason(detail.reason);
+      setCameraOpen(true);
+    };
+
+    window.addEventListener(CAMERA_REQUEST_ACCEPTED_UI_EVENT, onCameraRequestAccepted);
+    return () => {
+      window.removeEventListener(CAMERA_REQUEST_ACCEPTED_UI_EVENT, onCameraRequestAccepted);
+    };
+  }, [currentSessionKey]);
+
   // ── Stage browser File objects (paste / drag-drop) ─────────────
 
   const stageBufferFiles = useCallback(async (files: globalThis.File[]) => {
@@ -390,11 +415,74 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     }
   }, []);
 
+  const stageSingleBufferFile = useCallback(async (file: globalThis.File): Promise<FileAttachment> => {
+    const base64 = await readFileAsBase64(file);
+    const staged = await hostApiFetch<{
+      id: string;
+      fileName: string;
+      mimeType: string;
+      fileSize: number;
+      stagedPath: string;
+      preview: string | null;
+    }>('/api/files/stage-buffer', {
+      method: 'POST',
+      body: JSON.stringify({
+        base64,
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+      }),
+    });
+
+    return {
+      ...staged,
+      status: 'ready',
+    };
+  }, []);
+
   // ── Attachment management ──────────────────────────────────────
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments(prev => prev.filter(a => a.id !== id));
   }, []);
+
+  const handleAttachCapturedPhoto = useCallback(async (file: File) => {
+    const staged = await stageSingleBufferFile(file);
+    setAttachments((prev) => [...prev, staged]);
+    setCameraOpen(false);
+    setCameraRequestedByAgent(false);
+    setCameraRequestReason(undefined);
+  }, [stageSingleBufferFile]);
+
+  const handleIdentifyCapturedPhoto = useCallback(async (file: File) => {
+    const staged = await stageSingleBufferFile(file);
+    setCameraOpen(false);
+    setCameraRequestedByAgent(false);
+    setCameraRequestReason(undefined);
+    onSend(
+      '请识别这张图片里的主要内容，并用中文告诉我你看到了什么。',
+      [staged],
+      targetAgentId,
+      workingDirectory,
+    );
+    setTargetAgentId(null);
+    setPickerOpen(false);
+    setWorkingDirectory(null);
+  }, [onSend, stageSingleBufferFile, targetAgentId, workingDirectory]);
+
+  const handleImageHelperClick = useCallback(() => {
+    const trimmed = composerDraft.trim();
+    setImagePromptError(null);
+    if (!trimmed) {
+      setComposerDraft('/image ');
+    } else if (!trimmed.startsWith('/')) {
+      setComposerDraft(`/image ${trimmed}`);
+    }
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const length = textareaRef.current?.value.length ?? 0;
+      textareaRef.current?.setSelectionRange(length, length);
+    });
+  }, [composerDraft, setComposerDraft]);
 
   const allReady = attachments.length === 0 || attachments.every(a => a.status === 'ready');
   const canSend = (composerDraft.trim() || attachments.length > 0) && allReady && !disabled && !sending;
@@ -515,6 +603,21 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
         setSlashActiveIndex(0);
         return true;
       }
+      case 'image': {
+        const prompt = parsed.args.trim();
+        if (!prompt) {
+          setImagePromptError('请输入图片提示词，例如 /image 一只橘猫坐在键盘旁边');
+          requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+          });
+          return true;
+        }
+        setImagePromptError(null);
+        void generateImage?.(prompt);
+        setComposerDraft('');
+        setSlashActiveIndex(0);
+        return true;
+      }
       case 'clear': {
         newSession();
         setComposerDraft('');
@@ -567,7 +670,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       default:
         return false;
     }
-  }, [agents, canStop, currentAgentId, currentSessionKey, messages, navigate, newSession, onStop, setComposerDraft, showLeaderOnlyBlockedMessage]);
+  }, [agents, canStop, currentAgentId, currentSessionKey, generateImage, messages, navigate, newSession, onStop, setComposerDraft, showLeaderOnlyBlockedMessage]);
 
   const handleSend = useCallback(() => {
     if (executeLocalSlashCommand(composerDraft)) return;
@@ -800,12 +903,45 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               <Paperclip className="h-4 w-4" />
             </Button>
 
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-[30px] w-[30px] shrink-0 rounded-full bg-transparent text-[#3c3c43] transition-colors hover:bg-[#e5e5ea] hover:text-black"
+              onClick={() => {
+                setCameraRequestedByAgent(false);
+                setCameraRequestReason(undefined);
+                setCameraOpen(true);
+              }}
+              disabled={disabled || sending}
+              title="拍照"
+              aria-label="拍照"
+            >
+              <Camera className="h-4 w-4" />
+            </Button>
+
+            <button
+              type="button"
+              className="flex shrink-0 items-center gap-1 rounded-full border border-black/10 bg-white px-2.5 py-1 text-[12px] text-[#3c3c43] shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:border-black/20 hover:bg-[#f9f9f9]"
+              onClick={handleImageHelperClick}
+              disabled={disabled || sending}
+              title="生成图片"
+              aria-label="生成图片"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">生成图片</span>
+            </button>
+
             {/* Textarea */}
             <div className="flex-1 relative">
               <Textarea
                 ref={textareaRef}
                 value={composerDraft}
-                onChange={(e) => setComposerDraft(e.target.value)}
+                onChange={(e) => {
+                  setComposerDraft(e.target.value);
+                  if (imagePromptError) {
+                    setImagePromptError(null);
+                  }
+                }}
                 onKeyDown={handleKeyDown}
                 onCompositionStart={() => {
                   isComposingRef.current = true;
@@ -820,6 +956,9 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                 className="min-h-[22px] max-h-[200px] resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-[22px] text-black placeholder:text-[#8e8e93] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-white"
                 rows={1}
               />
+              {imagePromptError ? (
+                <p className="mt-2 text-[12px] text-[#d11a2a]">{imagePromptError}</p>
+              ) : null}
             </div>
 
             {/* Model Pill */}
@@ -875,6 +1014,22 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
           </div>
 
         </div>
+
+        <CameraCaptureModal
+          open={cameraOpen}
+          requestedByAgent={cameraRequestedByAgent}
+          requestReason={cameraRequestReason}
+          onClose={() => {
+            setCameraOpen(false);
+            setCameraRequestedByAgent(false);
+            setCameraRequestReason(undefined);
+          }}
+          onFallbackToFileUpload={() => {
+            void pickFiles();
+          }}
+          onAttachPhoto={handleAttachCapturedPhoto}
+          onIdentifyPhoto={handleIdentifyCapturedPhoto}
+        />
 
         <div
           data-testid="chat-composer-footer"

@@ -48,6 +48,7 @@ import { browserOAuthManager } from '../utils/browser-oauth';
 import { syncAllProviderAuthToRuntime } from '../services/providers/provider-runtime-sync';
 import { McpRuntimeManager } from '../services/mcp/runtime-manager';
 import { SessionRuntimeManager, type RuntimeSessionRecord } from '../services/session-runtime-manager';
+import { shouldAllowCameraPermission } from './media-permissions';
 import { scheduleImageSearchSemanticPrewarm } from '../services/image-search/prewarm';
 import { getImageIndexManager } from '../services/image-search/image-index-manager';
 import { getDefaultImageDirectories } from '../services/image-search/image-directories';
@@ -134,6 +135,12 @@ let hostApiServer: Server | null = null;
 const hostApiSessionToken = randomBytes(24).toString('hex');
 const mainWindowFocusState = createMainWindowFocusState();
 const quitLifecycleState = createQuitLifecycleState();
+let mainWindowRecoveryTimer: NodeJS.Timeout | null = null;
+let mainWindowRecoveryPending = false;
+let mainWindowRecoveryCount = 0;
+let lastMainWindowRecoveryAt = 0;
+const MAIN_WINDOW_RECOVERY_WINDOW_MS = 30_000;
+const MAIN_WINDOW_RECOVERY_MAX = 3;
 
 // Runtime-mutable desktop behavior settings (read at startup, updated via IPC events)
 let _minimizeToTray = true;
@@ -230,12 +237,24 @@ function createWindow(): BrowserWindow {
   });
 
   // Debug: Log rendering errors (especially for Linux)
-  win.webContents.on('render-process-gone', (event, details) => {
+  win.webContents.on('render-process-gone', (_event, details) => {
     logger.error('Render process gone:', details);
+    if (mainWindow === win) {
+      scheduleMainWindowRecovery('render-process-gone', details, win);
+    }
   });
 
-  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     logger.error('Failed to load:', errorCode, errorDescription, validatedURL);
+    scheduleDevServerReload(win, errorCode);
+  });
+
+  win.on('unresponsive', () => {
+    logger.warn('Main window became unresponsive');
+  });
+
+  win.on('responsive', () => {
+    logger.info('Main window became responsive again');
   });
 
   return win;
@@ -253,6 +272,20 @@ function loadWindowContents(win: BrowserWindow): void {
   if (process.platform === 'linux' && process.env.CLAWX_DEBUG !== '0') {
     win.webContents.openDevTools();
   }
+}
+
+function scheduleDevServerReload(win: BrowserWindow, errorCode: number): void {
+  // In dev mode, Electron may start before the Vite dev server is ready.
+  // Retry loading the URL after a short delay when connection is refused.
+  if (errorCode !== -102 || !process.env.VITE_DEV_SERVER_URL || win.isDestroyed()) {
+    return;
+  }
+
+  setTimeout(() => {
+    if (!win.isDestroyed()) {
+      void win.loadURL(process.env.VITE_DEV_SERVER_URL!);
+    }
+  }, 1500);
 }
 
 function focusWindow(win: BrowserWindow): void {
@@ -275,6 +308,62 @@ function focusMainWindow(): void {
 
   clearPendingSecondInstanceFocus(mainWindowFocusState);
   focusWindow(mainWindow);
+}
+
+function scheduleMainWindowRecovery(reason: string, details?: unknown, windowToReplace?: BrowserWindow | null): void {
+  if (isQuitting()) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastMainWindowRecoveryAt > MAIN_WINDOW_RECOVERY_WINDOW_MS) {
+    mainWindowRecoveryCount = 0;
+  }
+  lastMainWindowRecoveryAt = now;
+
+  if (mainWindowRecoveryPending) {
+    logger.warn(`Main window recovery already pending (${reason})`, details);
+    return;
+  }
+
+  if (mainWindowRecoveryCount >= MAIN_WINDOW_RECOVERY_MAX) {
+    logger.error(
+      `Main window recovery suppressed after ${MAIN_WINDOW_RECOVERY_MAX} attempts in ${MAIN_WINDOW_RECOVERY_WINDOW_MS}ms`,
+      details,
+    );
+    return;
+  }
+
+  mainWindowRecoveryPending = true;
+  mainWindowRecoveryCount += 1;
+  logger.warn(`Scheduling main window recovery (${reason})`, details);
+
+  try {
+    if (windowToReplace && !windowToReplace.isDestroyed()) {
+      windowToReplace.destroy();
+    }
+  } catch (error) {
+    logger.warn('Failed to destroy crashed main window before recovery:', error);
+  }
+
+  mainWindowRecoveryTimer = setTimeout(() => {
+    mainWindowRecoveryTimer = null;
+
+    if (isQuitting()) {
+      mainWindowRecoveryPending = false;
+      return;
+    }
+
+    try {
+      const recoveredWindow = createMainWindow();
+      loadWindowContents(recoveredWindow);
+      logger.warn(`Main window recovery succeeded (${reason})`);
+    } catch (error) {
+      logger.error(`Main window recovery failed (${reason})`, error);
+    } finally {
+      mainWindowRecoveryPending = false;
+    }
+  }, 250);
 }
 
 function createMainWindow(): BrowserWindow {
@@ -307,6 +396,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   win.on('closed', () => {
+    logger.info('Main window closed', { quitting: isQuitting(), recoveryPending: mainWindowRecoveryPending });
     if (mainWindow === win) {
       mainWindow = null;
     }
@@ -363,6 +453,24 @@ async function initialize(): Promise<void> {
 
   // Create the main window
   const window = createMainWindow();
+
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => (
+    shouldAllowCameraPermission({
+      permission,
+      isMainWindowWebContents: webContents === window.webContents,
+      requestingUrl: requestingOrigin,
+      mediaTypes: details.mediaTypes,
+    })
+  ));
+
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    callback(shouldAllowCameraPermission({
+      permission,
+      isMainWindowWebContents: webContents === window.webContents,
+      requestingUrl: details.requestingUrl,
+      mediaTypes: details.mediaTypes,
+    }));
+  });
 
   // Apply window title with brandSubtitle
   const windowTitle = brandSubtitle ? `KTClaw — ${brandSubtitle}` : 'KTClaw';
@@ -632,6 +740,20 @@ if (gotTheLock) {
     releaseProcessInstanceFileLock();
   });
 
+  process.on('warning', (warning) => {
+    logger.warn(`Node warning: ${warning.name} ${warning.message}`, {
+      code: (warning as Error & { code?: string }).code,
+    });
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection in Electron main process:', reason);
+  });
+
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    logger.error(`Uncaught exception in Electron main process (${origin})`, error);
+  });
+
   process.once('SIGINT', () => requestQuitOnSignal('SIGINT'));
   process.once('SIGTERM', () => requestQuitOnSignal('SIGTERM'));
 
@@ -725,14 +847,33 @@ if (gotTheLock) {
   });
 
   app.on('window-all-closed', () => {
+    logger.warn('window-all-closed fired', {
+      platform: process.platform,
+      recoveryPending: mainWindowRecoveryPending,
+      quitting: isQuitting(),
+    });
+    if (mainWindowRecoveryPending && !isQuitting()) {
+      return;
+    }
     if (process.platform !== 'darwin') {
       app.quit();
     }
   });
 
+  app.on('child-process-gone', (_event, details) => {
+    logger.error('Electron child process gone:', details);
+  });
+
   app.on('before-quit', (event) => {
     setQuitting();
     clearAllWatchers();
+    logger.warn('before-quit fired');
+
+    if (mainWindowRecoveryTimer) {
+      clearTimeout(mainWindowRecoveryTimer);
+      mainWindowRecoveryTimer = null;
+    }
+    mainWindowRecoveryPending = false;
 
     // Shutdown image index manager (closes DB and terminates worker)
     try {

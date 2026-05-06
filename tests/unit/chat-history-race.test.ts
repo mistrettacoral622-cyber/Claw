@@ -308,4 +308,45 @@ describe('chat history race handling', () => {
     expect(gatewayUser?._attachedFiles).toEqual([attachedFile]);
     expect(state.messages.some((message) => message.id === 'optimistic-user')).toBe(false);
   });
+
+  it('drops ghost file attachments when thumbnail recovery proves the file does not exist', async () => {
+    gatewayRpcMock.mockImplementation((method: string, payload: Record<string, unknown>) => {
+      if (method === 'chat.history') {
+        expect(payload.sessionKey).toBe('agent:main:session-a');
+        return {
+          messages: [
+            {
+              id: 'assistant-ghost',
+              role: 'assistant',
+              content: 'Found image at C:\\Users\\me\\Downloads\\ChatGPT Image 2026��4��29�� 01_27_00.png',
+              timestamp: 1,
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected gateway RPC: ${method}`);
+    });
+
+    hostApiFetchMock.mockImplementation((path: string) => {
+      if (path === '/api/files/thumbnails') {
+        return {
+          'C:\\Users\\me\\Downloads\\ChatGPT Image 2026��4��29�� 01_27_00.png': {
+            preview: null,
+            fileSize: 0,
+          },
+        };
+      }
+      throw new Error(`Unexpected host API call: ${path}`);
+    });
+
+    const { useChatStore } = await import('@/stores/chat');
+    useChatStore.setState(baseChatState);
+
+    await useChatStore.getState().loadHistory();
+    await flushMicrotasks();
+
+    const state = useChatStore.getState();
+    const ghostMessage = state.messages.find((message) => message.id === 'assistant-ghost');
+    expect(ghostMessage?._attachedFiles ?? []).toEqual([]);
+  });
 });

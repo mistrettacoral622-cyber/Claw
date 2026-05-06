@@ -179,7 +179,6 @@ describe('ChatMessage', () => {
     render(<ChatMessage message={message} showThinking={false} />);
 
     expect(screen.getByText('cat face.jpg')).toBeInTheDocument();
-    expect(screen.getByText('Preview unavailable')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open cat face\.jpg/ })).toBeInTheDocument();
   });
 
@@ -200,9 +199,8 @@ describe('ChatMessage', () => {
 
     render(<ChatMessage message={message} showThinking={false} />);
 
-    const preview = screen.getByRole('button', { name: /Preview penguin\.jpg/ });
-    expect(preview).toHaveClass('w-40');
-    expect(preview).toHaveClass('h-28');
+    const preview = screen.getByRole('button', { name: /Open penguin\.jpg/ });
+    expect(preview).toHaveClass('w-28');
     expect(screen.getByRole('img', { name: 'penguin.jpg' })).toHaveClass('object-cover');
   });
 });

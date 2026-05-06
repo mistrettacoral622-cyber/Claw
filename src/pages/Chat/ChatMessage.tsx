@@ -15,6 +15,7 @@ import type { RawMessage, AttachedFileMeta } from '@/stores/chat';
 import { useSettingsStore } from '@/stores/settings';
 import { extractText, extractThinking, extractImages, extractToolGroups, formatTimestamp, isSystemInjectedUserMessage } from './message-utils';
 import { TaskCreationBubble } from './TaskCreationBubble';
+import { CameraRequestCard } from './CameraRequestCard';
 
 interface ChatMessageProps {
   message: RawMessage;
@@ -62,6 +63,10 @@ export const ChatMessage = memo(function ChatMessage({
     && visibleTools.every((tool) => tool.name.trim().toLowerCase() === 'cron');
 
   const attachedFiles = message._attachedFiles || [];
+  const cameraRequest = message._cameraRequest;
+  const generatedImages = message._generatedImages || [];
+  const imageGenerationPending = message._imageGenerationPending;
+  const imageGenerationError = message._imageGenerationError;
   const [lightboxImg, setLightboxImg] = useState<{ src: string; fileName: string; filePath?: string; base64?: string; mimeType?: string } | null>(null);
   const [showTaskBubble, setShowTaskBubble] = useState(true);
   const [showTaskExcerpt, setShowTaskExcerpt] = useState(false);
@@ -72,7 +77,7 @@ export const ChatMessage = memo(function ChatMessage({
   // Hide system-injected user messages (e.g. scheduled reminder triggers) —
   // the assistant's response already contains the user-facing content.
   if (isSystemInjectedUserMessage(message)) return null;
-  if (hasOnlyCronToolActivity && !hasText && !visibleThinking && images.length === 0 && attachedFiles.length === 0) return null;
+  if (hasOnlyCronToolActivity && !hasText && !visibleThinking && images.length === 0 && attachedFiles.length === 0 && !cameraRequest && generatedImages.length === 0 && !imageGenerationPending && !imageGenerationError) return null;
 
   // Render task creation bubble (per D-21)
   if (message._taskProposal && showTaskBubble) {
@@ -140,7 +145,7 @@ export const ChatMessage = memo(function ChatMessage({
   }
 
   const hasStreamingToolStatus = showToolCalls && isStreaming && streamingTools.length > 0;
-  if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus) return null;
+  if (!hasText && !visibleThinking && images.length === 0 && visibleTools.length === 0 && attachedFiles.length === 0 && !hasStreamingToolStatus && !cameraRequest && generatedImages.length === 0 && !imageGenerationPending && !imageGenerationError) return null;
 
   return (
     <div
@@ -190,6 +195,10 @@ export const ChatMessage = memo(function ChatMessage({
               />
             ))}
           </div>
+        )}
+
+        {cameraRequest && (
+          <CameraRequestCard request={cameraRequest} />
         )}
 
         {/* Images — rendered ABOVE text bubble for user messages */}
@@ -281,6 +290,56 @@ export const ChatMessage = memo(function ChatMessage({
                 />
               );
             })}
+          </div>
+        )}
+
+        {!isUser && imageGenerationPending && (
+          <Card className="w-full max-w-lg rounded-3xl border border-black/10 bg-white/95 p-4 shadow-sm" aria-live="polite">
+            <div className="flex items-start gap-3">
+              <Loader2 className="mt-0.5 h-4 w-4 animate-spin text-[#0a84ff]" />
+              <div>
+                <p className="text-[15px] font-semibold text-foreground">正在生成图片</p>
+                <p className="mt-1 text-[13px] text-muted-foreground">{imageGenerationPending.prompt}</p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {!isUser && imageGenerationError && (
+          <Card className="w-full max-w-lg rounded-3xl border border-[#d11a2a]/20 bg-[#fff5f5] p-4 shadow-sm" role="alert">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-4 w-4 text-[#d11a2a]" />
+              <div>
+                <p className="text-[15px] font-semibold text-foreground">图片生成失败</p>
+                <p className="mt-1 text-[13px] text-muted-foreground">{imageGenerationError.message}</p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {!isUser && generatedImages.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {generatedImages.map((image, index) => (
+              <div key={`${image.filePath}-${index}`} className="space-y-2">
+                <ImagePreviewCard
+                  src={image.preview || ''}
+                  fileName={image.filePath.split(/[\\/]/).pop() || 'generated-image.png'}
+                  filePath={image.filePath}
+                  mimeType={image.mimeType}
+                  onPreview={() => {
+                    if (image.preview) {
+                      setLightboxImg({
+                        src: image.preview,
+                        fileName: image.filePath.split(/[\\/]/).pop() || 'generated-image.png',
+                        filePath: image.filePath,
+                        mimeType: image.mimeType,
+                      });
+                    }
+                  }}
+                />
+                <p className="text-[11px] text-muted-foreground">DashScope / {image.model} / {image.size || '1280*1280'}</p>
+              </div>
+            ))}
           </div>
         )}
 
@@ -677,7 +736,7 @@ function ImageLightbox({
             size="icon"
             className="h-8 w-8 bg-white/10 hover:bg-white/20 text-white"
             onClick={onClose}
-            title="关闭"
+            title="关闭图片预览"
           >
             <X className="h-4 w-4" />
           </Button>

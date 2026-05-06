@@ -1,0 +1,23 @@
+{
+  "name": "于PP",
+  "slug": "yupp",
+  "created_at": "2026-04-21T00:00:00+08:00",
+  "updated_at": "2026-04-21T00:00:00+08:00",
+  "version": "v1",
+  "profile": {
+    "together_duration": "约50天（2024年2月下旬 ~ 4月初）",
+    "apart_since": "2024年4月8日",
+    "occupation": "大三/大四学生，全日制备考雅思，准备出国读研",
+    "gender": "女",
+    "mbti": "未知",
+    "zodiac": "未知"
+  },
+  "tags": {
+    "personality": ["爽朗直接", "回避型依恋", "务实爱情观", "有主见", "深夜活跃", "话少但有料"],
+    "attachment_style": "回避型倾向",
+    "love_language": "实际行动（接受礼物/帮助）"
+  },
+  "impression": "叫你弟弟，你叫她姐姐。说话短平快，哈哈哈哈哈哈是她的标配。喜欢你，但这学期太忙，觉得谈恋爱不合适。没说不喜欢你，只是说了句'单身真好啊'，然后一切就不一样了。",
+  "memory_sources": ["私聊_于PP.json（WeFlow导出，13079条消息）"],
+  "corrections_count": 0
+}

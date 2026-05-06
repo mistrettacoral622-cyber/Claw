@@ -80,6 +80,7 @@ const GATEWAY_FETCH_PRELOAD_SOURCE = `'use strict';
 `;
 
 const OPENCLAW_EXPERIMENTAL_WARNING_FLAG = '--disable-warning=ExperimentalWarning';
+const OPENCLAW_DEP0190_WARNING_FLAG = '--disable-warning=DEP0190';
 
 function appendNodeOptionFlag(existing: string | undefined, flag: string): string {
   const trimmed = existing?.trim() ?? '';
@@ -132,6 +133,10 @@ export async function launchGatewayProcess(options: {
   runtimeEnv.NODE_OPTIONS = appendNodeOptionFlag(
     runtimeEnv.NODE_OPTIONS,
     OPENCLAW_EXPERIMENTAL_WARNING_FLAG,
+  );
+  runtimeEnv.NODE_OPTIONS = appendNodeOptionFlag(
+    runtimeEnv.NODE_OPTIONS,
+    OPENCLAW_DEP0190_WARNING_FLAG,
   );
   if (options.launchContext.localEmbeddingsPreloadPath) {
     runtimeEnv.NODE_OPTIONS = appendNodeImportToNodeOptions(

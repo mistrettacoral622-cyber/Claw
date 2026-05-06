@@ -3,6 +3,7 @@ import { PORTS } from '../../utils/config';
 import { listAgentsSnapshot } from '../../utils/agent-config';
 import { buildOpenClawControlUiUrl } from '../../utils/openclaw-control-ui';
 import { isOutboundMediaPath } from '../../utils/outbound-media';
+import { isGeneratedMediaPath } from '../../utils/generated-media';
 import { appendDispatchHints } from '../../../shared/chat-dispatch-hints';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
@@ -92,7 +93,7 @@ export async function handleGatewayRoutes(
       const imageAttachments: Array<{ content: string; mimeType: string; fileName: string }> = [];
       const fileReferences: string[] = [];
       if (body.media && body.media.length > 0) {
-        const invalidMedia = body.media.find((m) => !isOutboundMediaPath(m.filePath));
+        const invalidMedia = body.media.find((m) => !isOutboundMediaPath(m.filePath) && !isGeneratedMediaPath(m.filePath));
         if (invalidMedia) {
           sendJson(res, 400, { success: false, error: 'MEDIA_PATH_NOT_STAGED', filePath: invalidMedia.filePath });
           return true;

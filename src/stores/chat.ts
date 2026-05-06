@@ -11,6 +11,10 @@ import {
   resolveImageUnderstandingAvailability,
 } from '../../shared/chat-dispatch-hints';
 import {
+  type CameraRequestDetail,
+  isCameraRequestEvent,
+} from '../../shared/camera-request';
+import {
   buildLeaderOnlyBlockedMessage,
   findAgentBySessionKey,
   isDirectMainSessionBlocked,
@@ -46,14 +50,39 @@ function isImageUnderstandingErrorMessage(message: string): boolean {
     || normalized.includes('content type');
 }
 
+function isImageNetworkErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('network connection error')
+    || normalized.includes('network error')
+    || normalized.includes('llm request failed')
+    || normalized.includes('fetch failed')
+    || normalized.includes('econn')
+    || normalized.includes('timeout');
+}
+
 function normalizeSendErrorMessage(message: string, hasImages: boolean): string {
   if (hasImages && isImageUnderstandingErrorMessage(message)) {
     return '该模型暂时不能识别图片哦。';
+  }
+  if (hasImages && isImageNetworkErrorMessage(message)) {
+    return '拍照识别失败：当前图片识别请求的网络或 Provider 连接不可用。请检查视觉模型、API Key、代理或网络连接后重试。';
   }
   return message;
 }
 
 // ── Types ────────────────────────────────────────────────────────
+
+function hasRecentUserImageMessage(messages: RawMessage[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') {
+      continue;
+    }
+    const attachedFiles = message._attachedFiles || [];
+    return attachedFiles.some((file) => file.mimeType.startsWith('image/'));
+  }
+  return false;
+}
 
 function resolvePreferredProviderModelRef(): string | undefined {
   const { accounts, vendors, defaultAccountId } = useProviderStore.getState();
@@ -153,6 +182,25 @@ export interface RawMessage {
     owningTeamLabel?: string;
     latestInternalExcerpt?: TaskLatestInternalExcerpt;
   };
+  _cameraRequest?: CameraRequestDetail;
+  _generatedImages?: Array<{
+    filePath: string;
+    mimeType: string;
+    preview: string | null;
+    provider: 'dashscope';
+    model: 'wan2.6-t2i';
+    prompt: string;
+    requestId?: string;
+    size?: string;
+  }>;
+  _imageGenerationPending?: {
+    prompt: string;
+  };
+  _imageGenerationError?: {
+    prompt: string;
+    message: string;
+    code?: string;
+  };
 }
 
 /** Content block inside a message */
@@ -229,6 +277,14 @@ interface ChatState {
   sessionLastActivity: Record<string, number>;
   /** Unread message counts per session key */
   sessionUnreadCounts: Record<string, number>;
+  generatedImageContextBySession: Record<string, {
+    filePath: string;
+    mimeType: string;
+    fileName: string;
+    preview: string | null;
+    prompt: string;
+    createdAt: number;
+  }>;
 
   // Thinking
   showThinking: boolean;
@@ -256,6 +312,10 @@ interface ChatState {
     workingDir?: string | null,
   ) => Promise<void>;
   abortRun: () => Promise<void>;
+  generateImage: (prompt: string, options?: { negativePrompt?: string }) => Promise<void>;
+  acceptCameraRequest: (id: string) => void;
+  declineCameraRequest: (id: string) => void;
+  clearGeneratedImageContext: (sessionKey: string) => void;
   handleChatEvent: (event: Record<string, unknown>) => void;
   toggleThinking: () => void;
   refresh: () => Promise<void>;
@@ -837,18 +897,23 @@ async function loadMissingPreviews(messages: RawMessage[]): Promise<boolean> {
     for (const msg of messages) {
       if (!msg._attachedFiles) continue;
 
-      // Update files that have filePath
-      for (const file of msg._attachedFiles) {
+      // Update files that have filePath. Drop ghost entries where the thumbnail
+      // API confirms the file does not exist (preview=null AND fileSize=0).
+      msg._attachedFiles = msg._attachedFiles.filter((file) => {
         const fp = file.filePath;
-        if (!fp) continue;
+        if (!fp) return true;
         const thumb = thumbnails[fp];
-        if (thumb && (thumb.preview || thumb.fileSize)) {
-          if (thumb.preview) file.preview = thumb.preview;
-          if (thumb.fileSize) file.fileSize = thumb.fileSize;
-          _imageCache.set(fp, { ...file });
+        if (!thumb) return true;
+        if (!thumb.preview && !thumb.fileSize) {
           updated = true;
+          return false; // file confirmed missing — drop it
         }
-      }
+        if (thumb.preview) file.preview = thumb.preview;
+        if (thumb.fileSize) file.fileSize = thumb.fileSize;
+        _imageCache.set(fp, { ...file });
+        updated = true;
+        return true;
+      });
 
       // Legacy: update by index for [media attached: ...] refs
       if (msg.role === 'user') {
@@ -1260,6 +1325,14 @@ function hasNonToolAssistantContent(message: RawMessage | undefined): boolean {
   return false;
 }
 
+// Returns true if the message is a completed tool-result (toolresult role),
+// used as a fallback to detect that a tool-call round-trip finished even when
+// the model produced no follow-up text (e.g. small models like Qwen3.5-9B).
+function isCompletedToolResult(message: RawMessage | undefined): boolean {
+  if (!message) return false;
+  return message.role === 'toolresult';
+}
+
 // ── Store ────────────────────────────────────────────────────────
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -1284,6 +1357,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionLabels: {},
   sessionLastActivity: {},
   sessionUnreadCounts: getUnreadCounts(),
+  generatedImageContextBySession: {},
 
   showThinking: true,
   thinkingLevel: null,
@@ -1744,13 +1818,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       // If pendingFinal, check whether the AI produced a final text response.
+      // Also clear if the most recent message after the user turn is a completed
+      // tool-result — this handles models (e.g. Qwen3.5-9B) that finish a
+      // tool-call round-trip without emitting a follow-up text message.
       if (pendingFinal || get().pendingFinal) {
-        const recentAssistant = [...filteredMessages].reverse().find((msg) => {
+        const msgsAfterUser = [...filteredMessages].filter(isAfterUserMsg);
+        const recentAssistant = [...msgsAfterUser].reverse().find((msg) => {
           if (msg.role !== 'assistant') return false;
           if (!hasNonToolAssistantContent(msg)) return false;
-          return isAfterUserMsg(msg);
+          return true;
         });
-        if (recentAssistant) {
+        const lastMsg = msgsAfterUser[msgsAfterUser.length - 1];
+        const toolRoundTripDone = isCompletedToolResult(lastMsg);
+        if (recentAssistant || toolRoundTripDone) {
           clearHistoryPoll();
           set({ sending: false, activeRunId: null, pendingFinal: false });
         }
@@ -1837,15 +1917,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const currentSessionKey = targetSessionKey;
     const normalizedWorkingDir = workingDir?.trim() || undefined;
+    const generatedImageContext = get().generatedImageContextBySession[currentSessionKey];
+    const followupGeneratedAttachment = !attachments?.length && generatedImageContext
+      ? [{
+          fileName: generatedImageContext.fileName,
+          mimeType: generatedImageContext.mimeType,
+          fileSize: 0,
+          stagedPath: generatedImageContext.filePath,
+          preview: generatedImageContext.preview,
+        }]
+      : undefined;
+    const effectiveAttachments = attachments?.length ? attachments : followupGeneratedAttachment;
 
     // Add user message optimistically (with local file metadata for UI display)
     const nowMs = Date.now();
     const userMsg: RawMessage = {
       role: 'user',
-      content: trimmed || (attachments?.length ? '(file attached)' : ''),
+      content: trimmed || (effectiveAttachments?.length ? '(file attached)' : ''),
       timestamp: nowMs / 1000,
       id: crypto.randomUUID(),
-      _attachedFiles: attachments?.map(a => ({
+      _attachedFiles: effectiveAttachments?.map(a => ({
         fileName: a.fileName,
         mimeType: a.mimeType,
         fileSize: a.fileSize,
@@ -1876,7 +1967,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({ sessionLastActivity: { ...s.sessionLastActivity, [currentSessionKey]: nowMs } }));
 
     const activeModelSelection = resolveChatModelSelection(targetAgentId ?? get().currentAgentId);
-    const imageAvailability = hasImageAttachments(attachments)
+    const imageAvailability = hasImageAttachments(effectiveAttachments)
       ? resolveImageUnderstandingAvailability({
           currentModel: activeModelSelection,
           defaultModel: useSettingsStore.getState().defaultModel,
@@ -1884,7 +1975,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
       : 'native';
 
-    if (hasImageAttachments(attachments) && imageAvailability === 'missing') {
+    if (hasImageAttachments(effectiveAttachments) && imageAvailability === 'missing') {
       const unsupportedImageMsg: RawMessage = {
         role: 'assistant',
         content: '该模型暂时不能识别图片哦。',
@@ -1957,16 +2048,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       const idempotencyKey = crypto.randomUUID();
-      const hasMedia = attachments && attachments.length > 0;
+      const hasMedia = effectiveAttachments && effectiveAttachments.length > 0;
       if (hasMedia) {
-        console.log('[sendMessage] Media paths:', attachments!.map(a => a.stagedPath));
+        console.log('[sendMessage] Media paths:', effectiveAttachments!.map(a => a.stagedPath));
       }
 
       // Cache image attachments BEFORE the IPC call to avoid race condition:
       // history may reload (via Gateway event) before the RPC returns.
       // Keyed by staged file path which appears in [media attached: <path> ...].
-      if (hasMedia && attachments) {
-        for (const a of attachments) {
+      if (hasMedia && effectiveAttachments) {
+        for (const a of effectiveAttachments) {
           _imageCache.set(a.stagedPath, {
             fileName: a.fileName,
             mimeType: a.mimeType,
@@ -1983,7 +2074,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const CHAT_SEND_TIMEOUT_MS = 120_000;
 
       const baseMessage = trimmed || (hasMedia ? 'Process the attached file(s).' : '');
-      const dispatchAwareMessage = appendDispatchHints(baseMessage, attachments);
+      const dispatchAwareMessage = appendDispatchHints(baseMessage, effectiveAttachments);
 
       if (hasMedia) {
         result = await hostApiFetch<{ success: boolean; result?: { runId?: string }; error?: string }>(
@@ -1996,7 +2087,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               deliver: false,
               idempotencyKey,
               ...(normalizedWorkingDir ? { cwd: normalizedWorkingDir } : {}),
-              media: attachments.map((a) => ({
+              media: effectiveAttachments.map((a) => ({
                 filePath: a.stagedPath,
                 mimeType: a.mimeType,
                 fileName: a.fileName,
@@ -2024,7 +2115,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!result.success) {
         clearHistoryPoll();
         set({
-          error: normalizeSendErrorMessage(result.error || 'Failed to send message', hasImageAttachments(attachments)),
+          error: normalizeSendErrorMessage(result.error || 'Failed to send message', hasImageAttachments(effectiveAttachments)),
           sending: false,
         });
       } else if (result.result?.runId) {
@@ -2033,8 +2124,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       clearHistoryPoll();
       const message = err instanceof Error ? err.message : String(err);
-      set({ error: normalizeSendErrorMessage(message, hasImageAttachments(attachments)), sending: false });
-      throw err;
+      set({ error: normalizeSendErrorMessage(message, hasImageAttachments(effectiveAttachments)), sending: false });
+    } finally {
+      if (followupGeneratedAttachment) {
+        const nextContext = { ...get().generatedImageContextBySession };
+        delete nextContext[currentSessionKey];
+        set({ generatedImageContextBySession: nextContext });
+      }
     }
   },
 
@@ -2059,6 +2155,169 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Handle incoming chat events from Gateway ──
 
+  generateImage: async (prompt, options) => {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+
+    const nowMs = Date.now();
+    const currentSessionKey = get().currentSessionKey;
+    const userId = crypto.randomUUID();
+    const pendingId = crypto.randomUUID();
+    const normalizedUserMessage = `生成图片：${trimmed}`;
+
+    set((state) => ({
+      messages: [
+        ...state.messages,
+        {
+          role: 'user',
+          content: normalizedUserMessage,
+          timestamp: nowMs / 1000,
+          id: userId,
+        },
+        {
+          role: 'assistant',
+          content: '',
+          timestamp: nowMs / 1000,
+          id: pendingId,
+          _imageGenerationPending: { prompt: trimmed },
+        },
+      ],
+      sessionLastActivity: { ...state.sessionLastActivity, [currentSessionKey]: nowMs },
+    }));
+
+    try {
+      const result = await hostApiFetch<{
+        success: boolean;
+        code?: string;
+        error?: string;
+        image?: {
+          filePath: string;
+          mimeType: string;
+          preview: string | null;
+          metadata?: {
+            prompt?: string;
+            requestId?: string;
+            size?: string;
+          };
+        };
+      }>('/api/image-generation/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: trimmed,
+          ...(options?.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}),
+        }),
+      });
+
+      if (result.success && result.image) {
+        const image = result.image;
+        const generatedImage = {
+          filePath: image.filePath,
+          mimeType: image.mimeType,
+          preview: image.preview,
+          provider: 'dashscope' as const,
+          model: 'wan2.6-t2i' as const,
+          prompt: image.metadata?.prompt || trimmed,
+          requestId: image.metadata?.requestId,
+          size: image.metadata?.size,
+        };
+        set((state) => ({
+          messages: state.messages.map((message) => (
+            message.id === pendingId
+              ? {
+                  ...message,
+                  _imageGenerationPending: undefined,
+                  _generatedImages: [generatedImage],
+                }
+              : message
+          )),
+          generatedImageContextBySession: {
+            ...state.generatedImageContextBySession,
+            [currentSessionKey]: {
+              filePath: image.filePath,
+              mimeType: image.mimeType,
+              fileName: image.filePath.split(/[\\/]/).pop() || 'generated-image.png',
+              preview: image.preview,
+              prompt: trimmed,
+              createdAt: nowMs,
+            },
+          },
+        }));
+        return;
+      }
+
+      const errorMessage = result.error || '图片暂时生成失败，请稍后重试。';
+      set((state) => ({
+        messages: state.messages.map((message) => (
+          message.id === pendingId
+            ? {
+                ...message,
+                _imageGenerationPending: undefined,
+                _imageGenerationError: {
+                  prompt: trimmed,
+                  message: errorMessage,
+                  code: result.code,
+                },
+              }
+            : message
+        )),
+      }));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        messages: state.messages.map((message) => (
+          message.id === pendingId
+            ? {
+                ...message,
+                _imageGenerationPending: undefined,
+                _imageGenerationError: {
+                  prompt: trimmed,
+                  message: errorMessage,
+                },
+              }
+            : message
+        )),
+      }));
+    }
+  },
+
+  acceptCameraRequest: (id) => {
+    set((state) => ({
+      messages: state.messages.map((message) => (
+        message._cameraRequest?.id === id
+          ? {
+              ...message,
+              _cameraRequest: {
+                ...message._cameraRequest,
+                status: 'accepted',
+              },
+            }
+          : message
+      )),
+    }));
+  },
+
+  declineCameraRequest: (id) => {
+    set((state) => ({
+      messages: state.messages.map((message) => (
+        message._cameraRequest?.id === id
+          ? {
+              ...message,
+              _cameraRequest: {
+                ...message._cameraRequest,
+                status: 'declined',
+              },
+            }
+          : message
+      )),
+    }));
+  },
+
+  clearGeneratedImageContext: (sessionKey) => {
+    const nextContext = { ...get().generatedImageContextBySession };
+    delete nextContext[sessionKey];
+    set({ generatedImageContextBySession: nextContext });
+  },
+
   handleChatEvent: (event: Record<string, unknown>) => {
     const runId = String(event.runId || '');
     const eventState = String(event.state || '');
@@ -2074,6 +2333,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (isDuplicateChatEvent(eventState, event)) return;
 
     _lastChatEventAt = Date.now();
+
+    if (isCameraRequestEvent(event)) {
+      const requestId = typeof event.requestId === 'string'
+        ? event.requestId
+        : (typeof event.id === 'string' ? event.id : crypto.randomUUID());
+      const reason = typeof event.reason === 'string'
+        ? event.reason
+        : (typeof event.message === 'string' ? event.message : undefined);
+      const alreadyExists = get().messages.some((message) => message._cameraRequest?.id === requestId);
+      if (!alreadyExists) {
+        set((state) => ({
+          messages: [
+            ...state.messages,
+            {
+              role: 'assistant',
+              content: 'Agent 请求你拍一张照片',
+              timestamp: Date.now() / 1000,
+              id: `camera-request-${requestId}`,
+              _cameraRequest: {
+                id: requestId,
+                sessionKey: currentSessionKey,
+                runId: runId || undefined,
+                reason,
+                requestedAt: Date.now(),
+                status: 'pending',
+              },
+            },
+          ],
+        }));
+      }
+      return;
+    }
 
     // Defensive: if state is missing but we have a message, try to infer state.
     let resolvedState = eventState;
@@ -2275,6 +2566,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       case 'error': {
         const errorMsg = String(event.errorMessage || 'An error occurred');
+        const normalizedErrorMsg = normalizeSendErrorMessage(errorMsg, hasRecentUserImageMessage(get().messages));
         const wasSending = get().sending;
 
         // Snapshot the current streaming message into messages[] so partial
@@ -2293,7 +2585,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
 
         set({
-          error: errorMsg,
+          error: normalizedErrorMsg,
           streamingText: '',
           streamingMessage: null,
           streamingTools: [],

@@ -200,6 +200,42 @@ describe('gateway routes security', () => {
     expect(rpcParams.message).toContain('Describe this image');
   });
 
+  it('allows generated media paths for follow-up sends', async () => {
+    const { handleGatewayRoutes } = await import('@electron/api/routes/gateway');
+    const rpcMock = vi.fn(async () => ({ runId: 'run-generated' }));
+    const imagePath = join(homedir(), '.openclaw', 'media', 'generated', 'vision.png');
+    parseJsonBodyMock.mockResolvedValue({
+      sessionKey: 'session-1',
+      message: '继续分析这张图',
+      idempotencyKey: 'idem-generated',
+      media: [
+        {
+          filePath: imagePath,
+          mimeType: 'image/png',
+          fileName: 'vision.png',
+        },
+      ],
+    });
+
+    const handled = await handleGatewayRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/chat/send-with-media'),
+      {
+        gatewayManager: {
+          rpc: rpcMock,
+        },
+      } as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(rpcMock).toHaveBeenCalled();
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      result: { runId: 'run-generated' },
+    });
+  });
+
   it('PUT /api/agents/:id/workspace/AGENTS.md writes file when content provided', async () => {
     const { handleAgentRoutes } = await import('@electron/api/routes/agents');
     writeFileMock.mockResolvedValue(undefined);

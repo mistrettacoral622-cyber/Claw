@@ -606,6 +606,39 @@ function patchBundledRuntime(outputDir) {
 \t});`,
     },
     {
+      label: 'powershell utf8 prelude',
+      target: () => findFirstFileByName(path.join(outputDir, 'dist'), /^pi-embedded-.*\.js$/),
+      search: `\t\tconst { shell, args: shellArgs } = getShellConfig();
+\t\tconst childArgv = [
+\t\t\tshell,
+\t\t\t...shellArgs,
+\t\t\texecCommand
+\t\t];
+\t\tif (opts.usePty) return {
+\t\t\tmode: "pty",
+\t\t\tptyCommand: execCommand,
+\t\t\tchildFallbackArgv: childArgv,
+\t\t\tenv: shellRuntimeEnv,
+\t\t\tstdinMode: "pipe-open"
+\t\t};`,
+      replace: `\t\tconst { shell, args: shellArgs } = getShellConfig();
+\t\tconst shellCommand = process.platform === "win32" && ["powershell", "pwsh"].includes(normalizeShellName(shell))
+\t\t\t? \`[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null; & { \${execCommand} }\`
+\t\t\t: execCommand;
+\t\tconst childArgv = [
+\t\t\tshell,
+\t\t\t...shellArgs,
+\t\t\tshellCommand
+\t\t];
+\t\tif (opts.usePty) return {
+\t\t\tmode: "pty",
+\t\t\tptyCommand: shellCommand,
+\t\t\tchildFallbackArgv: childArgv,
+\t\t\tenv: shellRuntimeEnv,
+\t\t\tstdinMode: "pipe-open"
+\t\t};`,
+    },
+    {
       label: 'chrome launcher',
       target: () => findFirstFileByName(path.join(outputDir, 'dist', 'plugin-sdk'), /^chrome-.*\.js$/),
       search: `\t\treturn spawn(exe.path, args, {
@@ -649,6 +682,15 @@ function patchBundledRuntime(outputDir) {
 \t\t\t\tcwd: this.workspaceDir,
 \t\t\t\twindowsHide: true
 \t\t\t});`,
+    },
+    {
+      label: 'warning filter dep0190',
+      target: () => findFirstFileByName(path.join(outputDir, 'dist'), /^warning-filter-.*\.js$/),
+      search: `\tif (warning.code === "DEP0060" && warning.message?.includes("util._extend")) return true;
+\tif (warning.name === "ExperimentalWarning" && warning.message?.includes("SQLite is an experimental feature")) return true;`,
+      replace: `\tif (warning.code === "DEP0060" && warning.message?.includes("util._extend")) return true;
+\tif (warning.code === "DEP0190" && warning.message?.includes("shell option true")) return true;
+\tif (warning.name === "ExperimentalWarning" && warning.message?.includes("SQLite is an experimental feature")) return true;`,
     },
   ];
 

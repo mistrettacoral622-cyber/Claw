@@ -57,6 +57,12 @@ const stripFileProtocol = (v: string): string => {
   return c;
 };
 
+const resolveLocalSrcPath = (src: string): string => {
+  const normalized = src.replace(/^localfile:\/\//i, 'file://');
+  const rawPath = stripFileProtocol(stripHashAndQuery(normalized));
+  return safeDecodeURIComponent(rawPath) || rawPath;
+};
+
 const hasFileExtension = (v: string) => /\.[A-Za-z0-9]{1,6}$/.test(v);
 
 const looksLikeDirectory = (v: string): boolean => {
@@ -435,7 +441,7 @@ function LocalImagePreview({ src, alt }: { src: string; alt: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    const filePath = src.replace(/^file:\/\/\/?/, '');
+    const filePath = resolveLocalSrcPath(src);
     invokeIpc('media:getThumbnails', [{ filePath, mimeType: 'image/jpeg' }])
       .then((result: unknown) => {
         if (cancelled) return;
@@ -449,7 +455,7 @@ function LocalImagePreview({ src, alt }: { src: string; alt: string }) {
   }, [src]);
 
   const handleClick = useCallback(() => {
-    const filePath = src.replace(/^file:\/\/\/?/, '');
+    const filePath = resolveLocalSrcPath(src);
     invokeIpc('shell:openPath', filePath);
   }, [src]);
 

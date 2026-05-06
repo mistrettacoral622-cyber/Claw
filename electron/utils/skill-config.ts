@@ -5,7 +5,7 @@
  *
  * All file I/O uses async fs/promises to avoid blocking the main thread.
  */
-import { readFile, writeFile, access, cp, mkdir } from 'fs/promises';
+import { readFile, writeFile, access, cp, mkdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { constants } from 'fs';
 import { join } from 'path';
@@ -311,7 +311,7 @@ async function tryReadMarker(markerPath: string): Promise<PreinstalledMarker | n
  * - If skill is missing locally, install it.
  * - If local skill exists without our marker, treat as user-managed and never overwrite.
  * - If marker exists with same version, skip.
- * - If marker exists with a different version, skip by default to avoid overwriting edits.
+ * - If marker exists with a different version, replace it with the bundled update.
  */
 export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
     const skills = await readPreinstalledManifest();
@@ -358,8 +358,13 @@ export async function ensurePreinstalledSkillsInstalled(): Promise<void> {
             if (marker.version === desiredVersion) {
                 continue;
             }
-            logger.info(`Skipping preinstalled skill update for ${spec.slug} (local marker version=${marker.version}, desired=${desiredVersion})`);
-            continue;
+            logger.info(`Updating preinstalled skill ${spec.slug} from ${marker.version} to ${desiredVersion}`);
+            try {
+                await rm(targetDir, { recursive: true, force: true });
+            } catch (error) {
+                logger.warn(`Failed to remove stale preinstalled skill ${spec.slug}:`, error);
+                continue;
+            }
         }
 
         try {

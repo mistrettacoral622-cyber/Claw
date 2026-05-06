@@ -20,4 +20,26 @@ describe('MarkdownContent local file links', () => {
       expect(invokeIpcMock).toHaveBeenCalledWith('shell:openPath', '/home/user/My Photos/cat.jpg');
     });
   });
+
+  it('decodes local image markdown paths before requesting thumbnails on Windows-style file URLs', async () => {
+    invokeIpcMock.mockImplementation(async (channel: string) => {
+      if (channel === 'media:getThumbnails') {
+        return {
+          'C:/Users/me/My Photos/\u732b.png': {
+            preview: 'data:image/png;base64,abc',
+            fileSize: 128,
+          },
+        };
+      }
+      return '';
+    });
+
+    render(<MarkdownContent content="![cat](file:///C:/Users/me/My%20Photos/%E7%8C%AB.png)" />);
+
+    await waitFor(() => {
+      expect(invokeIpcMock).toHaveBeenCalledWith('media:getThumbnails', [
+        { filePath: 'C:/Users/me/My Photos/\u732b.png', mimeType: 'image/jpeg' },
+      ]);
+    });
+  });
 });

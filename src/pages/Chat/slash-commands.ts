@@ -1,5 +1,5 @@
 export interface ChatInputSlashCommand {
-  key: 'help' | 'new' | 'stop' | 'agent' | 'cwd' | 'clear' | 'export' | 'memory' | 'cron' | 'settings';
+  key: 'help' | 'new' | 'stop' | 'agent' | 'cwd' | 'clear' | 'export' | 'memory' | 'cron' | 'settings' | 'image';
   name: `/${string}`;
   description: string;
   argsHint?: string;
@@ -64,6 +64,12 @@ export const CHAT_INPUT_SLASH_COMMANDS: ChatInputSlashCommand[] = [
     key: 'settings',
     name: '/settings',
     description: 'Open settings',
+  },
+  {
+    key: 'image',
+    name: '/image',
+    argsHint: '<提示词>',
+    description: '生成图片',
   },
 ];
 

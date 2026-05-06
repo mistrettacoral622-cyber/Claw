@@ -153,7 +153,9 @@ export function Chat() {
     workingDir?: Parameters<typeof sendMessage>[3],
   ) => {
     setStreamingTimestamp(Date.now() / 1000);
-    sendMessage(text, attachments, targetAgentId, workingDir);
+    void sendMessage(text, attachments, targetAgentId, workingDir).catch((error) => {
+      console.error('Failed to send chat message:', error);
+    });
   };
 
   return (
