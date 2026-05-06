@@ -33,7 +33,7 @@ describe('initial main window presenter', () => {
     presenter.onReadyToShow();
 
     expect(win.show).toHaveBeenCalledOnce();
-    expect(win.focus).not.toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalledOnce();
   });
 
   it('shows after did-finish-load when ready-to-show does not fire', () => {
@@ -50,6 +50,7 @@ describe('initial main window presenter', () => {
     vi.advanceTimersByTime(250);
 
     expect(win.show).toHaveBeenCalledOnce();
+    expect(win.focus).toHaveBeenCalledOnce();
   });
 
   it('forces a visible window when neither ready nor load fires', () => {
@@ -65,6 +66,7 @@ describe('initial main window presenter', () => {
     vi.advanceTimersByTime(1_000);
 
     expect(win.show).toHaveBeenCalledOnce();
+    expect(win.focus).toHaveBeenCalledOnce();
     expect(logWarn).toHaveBeenCalledWith('Main window ready-to-show did not fire; showing fallback window');
   });
 

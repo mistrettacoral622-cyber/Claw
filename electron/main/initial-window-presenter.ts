@@ -80,6 +80,7 @@ export function createInitialWindowPresenter(
       options.logInfo?.('Main window loaded before ready-to-show; showing fallback window');
     }
     win.show();
+    win.focus();
   }
 
   return {
