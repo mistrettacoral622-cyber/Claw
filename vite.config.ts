@@ -31,7 +31,9 @@ export default defineConfig(({ command }) => {
         // Main process entry file
         entry: 'electron/main/index.ts',
         onstart(options) {
-          options.startup();
+          options.startup(['.', '--no-sandbox'], {
+            windowsHide: true,
+          });
         },
         vite: {
           build: {

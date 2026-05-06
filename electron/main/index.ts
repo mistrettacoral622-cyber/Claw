@@ -296,7 +296,9 @@ function createWindow(): BrowserWindow {
 function loadWindowContents(win: BrowserWindow): void {
   if (process.env.VITE_DEV_SERVER_URL) {
     void win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    win.webContents.openDevTools();
+    if (process.env.KTCLAW_OPEN_DEVTOOLS === '1') {
+      win.webContents.openDevTools();
+    }
     return;
   }
 
