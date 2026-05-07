@@ -79,7 +79,6 @@ export async function generateDashScopeWanImage(request: GenerateImageRequest): 
     headers: {
       Authorization: `Bearer ${credentials.apiKey}`,
       'Content-Type': 'application/json',
-      'X-DashScope-Async': 'false',
     },
     body: JSON.stringify({
       model: 'wan2.6-t2i',
