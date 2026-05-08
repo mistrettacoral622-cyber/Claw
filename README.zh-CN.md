@@ -143,6 +143,7 @@ Skills 页面可展示来自多个 OpenClaw 来源的技能（托管目录、wor
 
 ### 🔐 安全的供应商集成
 连接多个 AI 供应商（OpenAI、Anthropic 等），凭证安全存储在系统原生密钥链中。OpenAI 同时支持 API Key 与浏览器 OAuth（Codex 订阅）登录。
+在 Electron 无法访问系统密钥链的 Linux 环境中，KTClaw 会退回到本地编码后的 provider secret 存储，确保已配置的供应商和图片生成仍可使用。
 
 ### 🌙 自适应主题
 支持浅色模式、深色模式或跟随系统主题。KTClaw 自动适应你的偏好设置。

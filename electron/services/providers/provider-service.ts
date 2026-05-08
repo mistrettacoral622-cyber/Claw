@@ -49,6 +49,13 @@ function logLegacyProviderApiUsage(method: string, replacement: string): void {
   );
 }
 
+async function storeProviderApiKeyOrThrow(accountId: string, apiKey: string): Promise<void> {
+  const stored = await storeApiKey(accountId, apiKey);
+  if (!stored) {
+    throw new Error('Failed to store provider API key');
+  }
+}
+
 export class ProviderService {
   async listVendors(): Promise<ProviderDefinition[]> {
     return PROVIDER_DEFINITIONS;
@@ -74,7 +81,7 @@ export class ProviderService {
     await saveProvider(providerAccountToConfig(account));
     await saveProviderAccount(account);
     if (apiKey !== undefined && apiKey.trim()) {
-      await storeApiKey(account.id, apiKey.trim());
+      await storeProviderApiKeyOrThrow(account.id, apiKey.trim());
     }
     return (await getProviderAccount(account.id)) ?? account;
   }
@@ -102,7 +109,7 @@ export class ProviderService {
     if (apiKey !== undefined) {
       const trimmedKey = apiKey.trim();
       if (trimmedKey) {
-        await storeApiKey(accountId, trimmedKey);
+        await storeProviderApiKeyOrThrow(accountId, trimmedKey);
       } else {
         await deleteApiKey(accountId);
       }

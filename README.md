@@ -146,6 +146,7 @@ Local image search is available through the bundled `image-search` skill and Hos
 
 ### 🔐 Secure Provider Integration
 Connect to multiple AI providers (OpenAI, Anthropic, and more) with credentials stored securely in your system's native keychain. OpenAI supports both API key and browser OAuth (Codex subscription) sign-in.
+On Linux systems where Electron cannot access an OS keyring, KTClaw falls back to a local encoded provider-secret store so configured providers and image generation still work.
 
 ### 🌙 Adaptive Theming
 Light mode, dark mode, or system-synchronized themes. KTClaw adapts to your preferences automatically.

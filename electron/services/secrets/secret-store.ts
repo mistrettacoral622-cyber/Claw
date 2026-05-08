@@ -76,9 +76,11 @@ function encodeSecret(secret: ProviderSecret): EncryptedProviderSecret {
   const serialized = serializeSecret(secret);
 
   if (!canUseSafeStorage()) {
-    throw new SecureStorageUnavailableError(
-      'Secure storage unavailable; refusing to persist provider secrets without OS encryption.',
-    );
+    return {
+      __format: 'ktclaw-safe-storage/v1',
+      encryption: 'base64-fallback',
+      payload: Buffer.from(serialized, 'utf8').toString('base64'),
+    };
   }
 
   try {
@@ -117,15 +119,14 @@ export class ElectronStoreSecretStore implements SecretStore {
     const storedSecret = secrets[accountId];
 
     if (storedSecret) {
-        if (isEncryptedProviderSecret(storedSecret)) {
-          if (storedSecret.encryption === 'base64-fallback') {
-            if (!canUseSafeStorage()) {
-              return null;
-            }
-            const decoded = decodeSecret(storedSecret);
-            if (decoded) {
+      if (isEncryptedProviderSecret(storedSecret)) {
+        if (storedSecret.encryption === 'base64-fallback') {
+          const decoded = decodeSecret(storedSecret);
+          if (decoded) {
+            if (canUseSafeStorage()) {
               await this.set(decoded);
-              return decoded;
+            }
+            return decoded;
           }
           delete secrets[accountId];
           store.set('providerSecrets', secrets);
@@ -136,9 +137,6 @@ export class ElectronStoreSecretStore implements SecretStore {
       }
 
       if (isProviderSecret(storedSecret)) {
-        if (!canUseSafeStorage()) {
-          return null;
-        }
         await this.set(storedSecret);
         return storedSecret;
       }
@@ -147,10 +145,6 @@ export class ElectronStoreSecretStore implements SecretStore {
     const apiKeys = (store.get('apiKeys') ?? {}) as Record<string, string>;
     const apiKey = apiKeys[accountId];
     if (!apiKey) {
-      return null;
-    }
-
-    if (!canUseSafeStorage()) {
       return null;
     }
 

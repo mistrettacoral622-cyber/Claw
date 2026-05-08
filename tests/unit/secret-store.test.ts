@@ -151,7 +151,7 @@ describe('secret-store encryption', () => {
     });
   });
 
-  it('fails closed when safeStorage is unavailable without erasing secrets', async () => {
+  it('uses base64 fallback when safeStorage is unavailable', async () => {
     const storeData: Record<string, unknown> = {
       providerSecrets: {
         moonshot: {
@@ -164,28 +164,45 @@ describe('secret-store encryption', () => {
         anthropic: 'sk-legacy-anthropic',
       },
     };
-    const providerSecretsSnapshot = JSON.parse(JSON.stringify(storeData.providerSecrets));
-    const apiKeysSnapshot = JSON.parse(JSON.stringify(storeData.apiKeys));
     mockSecretStoreDeps(storeData, { encryptionAvailable: false });
 
     const { getProviderSecret, setProviderSecret } = await import('@electron/services/secrets/secret-store');
 
-    await expect(setProviderSecret({
+    await setProviderSecret({
       type: 'api_key',
       accountId: 'openai',
       apiKey: 'sk-openai-test',
-    })).rejects.toThrow();
+    });
 
     const moonshot = await getProviderSecret('moonshot');
     const anthropic = await getProviderSecret('anthropic');
+    const openai = await getProviderSecret('openai');
 
-    expect(moonshot).toBeNull();
-    expect(anthropic).toBeNull();
-    expect(storeData.providerSecrets).toEqual(providerSecretsSnapshot);
-    expect(storeData.apiKeys).toEqual(apiKeysSnapshot);
+    expect(moonshot).toEqual({
+      type: 'api_key',
+      accountId: 'moonshot',
+      apiKey: 'sk-legacy-moonshot',
+    });
+    expect(anthropic).toEqual({
+      type: 'api_key',
+      accountId: 'anthropic',
+      apiKey: 'sk-legacy-anthropic',
+    });
+    expect(openai).toEqual({
+      type: 'api_key',
+      accountId: 'openai',
+      apiKey: 'sk-openai-test',
+    });
+
+    const providerSecrets = storeData.providerSecrets as Record<string, { encryption?: string }>;
+    expect(providerSecrets.openai?.encryption).toBe('base64-fallback');
+    expect(providerSecrets.moonshot?.encryption).toBe('base64-fallback');
+    expect(providerSecrets.anthropic?.encryption).toBe('base64-fallback');
+    expect(JSON.stringify(storeData.providerSecrets)).not.toContain('sk-openai-test');
+    expect(storeData.apiKeys).toEqual({});
   });
 
-  it('preserves base64-fallback entries when safeStorage is unavailable', async () => {
+  it('reads base64-fallback entries when safeStorage is unavailable', async () => {
     const legacySecret = {
       type: 'api_key',
       accountId: 'perplexity',
@@ -207,7 +224,7 @@ describe('secret-store encryption', () => {
     const { getProviderSecret } = await import('@electron/services/secrets/secret-store');
     const secret = await getProviderSecret('perplexity');
 
-    expect(secret).toBeNull();
+    expect(secret).toEqual(legacySecret);
     expect(storeData.providerSecrets).toEqual(providerSecretsSnapshot);
   });
 });
