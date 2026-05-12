@@ -1,48 +1,107 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAllowCameraPermission } from '@electron/main/media-permissions';
+import { shouldAllowMediaPermission } from '@electron/main/media-permissions';
 
-describe('camera media permissions', () => {
-  it('allows media permission only for the main KTClaw window', () => {
-    expect(shouldAllowCameraPermission({
-      permission: 'media',
-      isMainWindowWebContents: true,
-      mediaTypes: ['video'],
-    })).toBe(true);
-
-    expect(shouldAllowCameraPermission({
-      permission: 'media',
-      isMainWindowWebContents: false,
-      mediaTypes: ['video'],
-    })).toBe(false);
-  });
-
-  it('allows video-only camera requests', () => {
-    expect(shouldAllowCameraPermission({
+describe('media permissions', () => {
+  // Test 1: video-only (Phase 18 camera path preserved)
+  it('allows video-only media permission for the main window', () => {
+    expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: ['video'],
     })).toBe(true);
   });
 
-  it('rejects media permission requests that include audio', () => {
-    expect(shouldAllowCameraPermission({
+  // Test 1b: uppercase variant of video-only
+  it('allows video-only with uppercase mediaTypes (case-insensitive)', () => {
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: true,
+      mediaTypes: ['VIDEO'],
+    })).toBe(true);
+  });
+
+  // Test 2: audio-only (new Phase 20 ASR microphone path)
+  it('allows audio-only media permission for the main window', () => {
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: true,
+      mediaTypes: ['audio'],
+    })).toBe(true);
+  });
+
+  // Test 2b: uppercase variant of audio-only
+  it('allows audio-only with uppercase mediaTypes (case-insensitive)', () => {
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: true,
+      mediaTypes: ['AUDIO'],
+    })).toBe(true);
+  });
+
+  // Test 3: video+audio combined
+  it('allows video+audio combined media permission for the main window', () => {
+    expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: ['video', 'audio'],
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  it('rejects requests without video mediaTypes', () => {
-    expect(shouldAllowCameraPermission({
+  // Test 4: empty or missing mediaTypes
+  it('rejects when mediaTypes is empty', () => {
+    expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: [],
     })).toBe(false);
+  });
 
-    expect(shouldAllowCameraPermission({
+  it('rejects when mediaTypes is missing', () => {
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: true,
+    })).toBe(false);
+  });
+
+  // Test 5: non-main-window origin
+  it('rejects non-main-window origin regardless of mediaTypes', () => {
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: false,
+      mediaTypes: ['video'],
+    })).toBe(false);
+
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: false,
+      mediaTypes: ['audio'],
+    })).toBe(false);
+
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      isMainWindowWebContents: false,
+      mediaTypes: ['video', 'audio'],
+    })).toBe(false);
+  });
+
+  // Test 6: non-'media' permission
+  it('rejects non-media permission types', () => {
+    expect(shouldAllowMediaPermission({
       permission: 'notifications',
       isMainWindowWebContents: true,
       mediaTypes: ['video'],
     })).toBe(false);
+
+    expect(shouldAllowMediaPermission({
+      permission: 'geolocation',
+      isMainWindowWebContents: true,
+      mediaTypes: ['audio'],
+    })).toBe(false);
+
+    expect(shouldAllowMediaPermission({
+      permission: 'media',
+      mediaTypes: ['video'],
+      isMainWindowWebContents: true,
+    })).toBe(true);
   });
 });
