@@ -228,10 +228,10 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     const errorMessages: Record<string, string> = {
       'no-speech': '未检测到语音，请重试',
       'aborted': '语音识别已取消',
-      'network': '网络连接失败，无法进行语音识别',
       'not-allowed': '未获得麦克风权限，请检查系统设置',
       'audio-capture': '无法访问麦克风设备',
-      'service-not-allowed': '语音识别服务不可用',
+      'audio-decode-not-supported': '当前环境无法解码录音音频',
+      'service-not-allowed': '本地语音识别服务不可用',
       'bad-grammar': '语音识别语法错误',
       'language-not-supported': '当前语言不支持语音识别',
       'nomatch': '未识别到语音，请重试',
@@ -242,23 +242,29 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
     const message = errorMessages[error] || `语音识别失败: ${error}`;
     toast.error(message);
   }, []);
+  const [isSpeechTranscribing, setIsSpeechTranscribing] = useState(false);
 
   const {
     isListening,
     isSupported: isSpeechSupported,
+    isTranscribing,
     start: startListening,
     stop: stopListening,
   } = useSpeechRecognition({
     lang: 'zh-CN',
     onInterim: handleSpeechInterim,
     onResult: handleSpeechResult,
+    onTranscribingChange: setIsSpeechTranscribing,
     onError: handleSpeechError,
   });
+  const isSpeechBusy = isListening || isTranscribing || isSpeechTranscribing;
 
   // Mic toggle handler
   const handleMicToggle = useCallback(() => {
     if (isListening) {
       stopListening();
+    } else if (isSpeechBusy) {
+      return;
     } else {
       const textarea = textareaRef.current;
       if (textarea) {
@@ -270,7 +276,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       }
       startListening();
     }
-  }, [isListening, stopListening, startListening, composerDraft]);
+  }, [isListening, isSpeechBusy, stopListening, startListening, composerDraft]);
 
   const activeSlashCommand = showSlashMenu
     ? (slashMatches[Math.min(slashActiveIndex, slashMatches.length - 1)] ?? null)
@@ -996,23 +1002,23 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               <Camera className="h-4 w-4" />
             </Button>
 
-            {/* Microphone Button — hidden when SpeechRecognition is not supported */}
+            {/* Microphone Button — local offline ASR */}
             {isSpeechSupported ? (
               <Button
                 variant="ghost"
                 size="icon"
                 className={cn(
                   'h-[30px] w-[30px] shrink-0 rounded-full bg-transparent transition-colors',
-                  isListening
+                  isSpeechBusy
                     ? 'text-red-500 animate-mic-pulse hover:bg-red-50'
                     : 'text-[#3c3c43] hover:bg-[#e5e5ea] hover:text-black',
                 )}
                 onClick={handleMicToggle}
-                disabled={disabled || sending}
-                title={isListening ? '停止聆听' : '语音输入'}
-                aria-label={isListening ? '停止聆听' : '语音输入'}
+                disabled={disabled || sending || isSpeechTranscribing || isTranscribing}
+                title={isSpeechTranscribing || isTranscribing ? '正在识别' : (isListening ? '停止聆听' : '语音输入')}
+                aria-label={isSpeechTranscribing || isTranscribing ? '正在识别' : (isListening ? '停止聆听' : '语音输入')}
               >
-                {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                {isSpeechBusy ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
               </Button>
             ) : null}
 
@@ -1047,8 +1053,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   isComposingRef.current = false;
                 }}
                 onPaste={handlePaste}
-                placeholder={isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息...`}
-                aria-label={isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息`}
+                placeholder={isSpeechTranscribing || isTranscribing ? '正在识别...' : (isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息...`)}
+                aria-label={isSpeechTranscribing || isTranscribing ? '正在识别...' : (isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息`)}
                 disabled={disabled}
                 className="min-h-[22px] max-h-[200px] resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-[22px] text-black placeholder:text-[#8e8e93] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-white"
                 rows={1}
@@ -1079,6 +1085,18 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   onSelect={async (model) => {
                     if (currentAgent) {
                       await updateAgent(currentAgent.id, { model });
+                      const sessionModel = model || 'default';
+                      const effectiveSessionKey = currentSessionKey || currentAgent.mainSessionKey;
+                      if (effectiveSessionKey) {
+                        await invokeIpc(
+                          'gateway:rpc',
+                          'sessions.patch',
+                          {
+                            sessionKey: effectiveSessionKey,
+                            model: sessionModel,
+                          },
+                        );
+                      }
                     }
                     setModelPickerOpen(false);
                   }}

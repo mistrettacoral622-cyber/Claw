@@ -26,6 +26,7 @@ const nodeTestInclude = [
   'tests/unit/image-vector-store.test.ts',
   'tests/unit/image-index-manager.test.ts',
   'tests/unit/image-search-auto-index.test.ts',
+  'tests/unit/local-asr.test.ts',
 ];
 
 const sharedResolve = {

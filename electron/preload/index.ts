@@ -130,6 +130,8 @@ const electronAPI = {
         'media:saveImage',
         // Chat send with media (reads staged files in main process)
         'chat:sendWithMedia',
+        // Local speech-to-text
+        'speech:transcribeLocal',
         // Session management
         'session:delete',
         // OpenClaw extras

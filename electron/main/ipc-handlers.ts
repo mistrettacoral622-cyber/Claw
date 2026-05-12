@@ -44,6 +44,7 @@ import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { proxyAwareFetch } from '../utils/proxy-fetch';
 import { getRecentTokenUsageHistory } from '../utils/token-usage';
+import { transcribeLocalSpeech } from '../services/asr/local-asr';
 import { getProviderService } from '../services/providers/provider-service';
 import {
   getOpenClawProviderKey,
@@ -164,6 +165,9 @@ export function registerIpcHandlers(
 
   // File staging handlers (upload/send separation)
   registerFileHandlers();
+
+  // Local speech-to-text handlers (offline ASR)
+  registerSpeechHandlers();
 }
 
 type HostApiFetchRequest = {
@@ -2616,6 +2620,18 @@ function registerFileHandlers(): void {
       }
     }
     return results;
+  });
+}
+
+function registerSpeechHandlers(): void {
+  ipcMain.handle('speech:transcribeLocal', async (_, payload: {
+    wavBase64?: string;
+    language?: string;
+  }) => {
+    return await transcribeLocalSpeech({
+      wavBase64: payload.wavBase64 ?? '',
+      language: payload.language,
+    });
   });
 }
 

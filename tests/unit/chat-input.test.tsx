@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ChatInput } from '@/pages/Chat/ChatInput';
 
 const {
@@ -10,12 +10,14 @@ const {
   providerStoreState,
   navigateMock,
   hostApiFetchMock,
+  invokeIpcMock,
   toastInfoMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
   agentsState: {
     agents: [] as Array<Record<string, unknown>>,
+    updateAgent: vi.fn(),
   },
   chatState: {
     currentAgentId: 'main',
@@ -50,6 +52,7 @@ const {
   },
   navigateMock: vi.fn(),
   hostApiFetchMock: vi.fn(),
+  invokeIpcMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
@@ -88,7 +91,7 @@ vi.mock('@/lib/host-api', () => ({
 }));
 
 vi.mock('@/lib/api-client', () => ({
-  invokeIpc: vi.fn(),
+  invokeIpc: (...args: unknown[]) => invokeIpcMock(...args),
 }));
 
 vi.mock('@/pages/Chat/FolderSelectorPopover', () => ({
@@ -149,6 +152,7 @@ vi.mock('sonner', () => ({
 describe('ChatInput agent targeting', () => {
   beforeEach(() => {
     agentsState.agents = [];
+    agentsState.updateAgent.mockReset();
     chatState.currentAgentId = 'main';
     chatState.currentSessionKey = 'agent:main:main';
     chatState.messages = [];
@@ -174,6 +178,7 @@ describe('ChatInput agent targeting', () => {
     providerStoreState.refreshProviderSnapshot.mockReset();
     navigateMock.mockReset();
     hostApiFetchMock.mockReset();
+    invokeIpcMock.mockReset();
     toastInfoMock.mockReset();
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
@@ -609,5 +614,70 @@ describe('ChatInput agent targeting', () => {
     expect(hostApiFetchMock).not.toHaveBeenCalled();
     expect(toastInfoMock).toHaveBeenCalledTimes(1);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('syncs the current session model override when selecting a composer model', async () => {
+    agentsState.agents = [
+      {
+        id: 'main',
+        name: 'Main',
+        isDefault: true,
+        model: 'deepseek/deepseek-chat',
+        modelDisplay: 'DeepSeek Chat',
+        inheritedModel: false,
+        workspace: '~/.openclaw/workspace',
+        agentDir: '~/.openclaw/agents/main/agent',
+        mainSessionKey: 'agent:main:main',
+        channelTypes: [],
+      },
+    ];
+
+    providerStoreState.accounts = [
+      {
+        id: 'moonshot-primary',
+        vendorId: 'moonshot',
+        label: 'Moonshot Primary',
+        model: 'kimi-k2.5',
+        enabled: true,
+      },
+    ];
+    providerStoreState.vendors = [
+      {
+        id: 'moonshot',
+        name: 'Moonshot',
+        defaultModelId: 'kimi-k2.5',
+      },
+    ];
+
+    const updateAgentMock = vi.fn(async () => {
+      agentsState.agents = [
+        {
+          ...agentsState.agents[0],
+          model: 'moonshot/kimi-k2.5',
+          modelDisplay: 'Moonshot / kimi-k2.5',
+        },
+      ];
+    });
+    agentsState.updateAgent = updateAgentMock;
+
+    invokeIpcMock.mockResolvedValue(undefined);
+
+    render(<ChatInput onSend={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('chat-composer-model-pill'));
+    fireEvent.click(await screen.findByText('Moonshot / kimi-k2.5'));
+
+    await waitFor(() => {
+      expect(updateAgentMock).toHaveBeenCalledWith('main', { model: 'moonshot/kimi-k2.5' });
+    });
+
+    expect(invokeIpcMock).toHaveBeenCalledWith(
+      'gateway:rpc',
+      'sessions.patch',
+      {
+        sessionKey: 'agent:main:main',
+        model: 'moonshot/kimi-k2.5',
+      },
+    );
   });
 });

@@ -53,6 +53,7 @@ coverage/
 
 resources/bin
 resources/image-search-models
+resources/asr-models
 
 # Secrets
 *.p12

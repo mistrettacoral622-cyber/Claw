@@ -32,6 +32,43 @@ if (typeof window !== 'undefined') {
     configurable: true,
   });
 
+  class MockMediaRecorder extends EventTarget {
+    static isTypeSupported = vi.fn(() => true);
+    state = 'inactive';
+    mimeType = 'audio/webm';
+    stream: MediaStream;
+
+    constructor(stream: MediaStream, options?: MediaRecorderOptions) {
+      super();
+      this.stream = stream;
+      this.mimeType = options?.mimeType ?? 'audio/webm';
+    }
+
+    start() {
+      this.state = 'recording';
+    }
+
+    stop() {
+      this.state = 'inactive';
+      this.dispatchEvent(new Event('stop'));
+    }
+
+    ondataavailable: ((event: BlobEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    onstop: (() => void) | null = null;
+  }
+
+  Object.defineProperty(window, 'MediaRecorder', {
+    value: MockMediaRecorder,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'MediaRecorder', {
+    value: MockMediaRecorder,
+    writable: true,
+    configurable: true,
+  });
+
   // Mock matchMedia
   Object.defineProperty(window, 'matchMedia', {
     writable: true,

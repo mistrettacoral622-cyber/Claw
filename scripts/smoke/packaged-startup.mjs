@@ -68,7 +68,7 @@ function findExecutable(platform, releaseRoot) {
 
   const files = walk(releaseRoot);
   if (platform === 'win') {
-    const candidates = files.filter((file) => /win-unpacked[\\/].+\.exe$/i.test(file));
+    const candidates = files.filter((file) => /win-unpacked[\\/](KTClaw|ktclaw)\.exe$/i.test(file));
     const target = newest(candidates);
     if (!target) fail(`no win-unpacked executable found under ${releaseRoot}`);
     return target;

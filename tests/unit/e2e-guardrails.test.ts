@@ -28,6 +28,7 @@ describe('E2E / release smoke guardrails', () => {
     expect(scripts['package:prepare']).toContain('bundle:openclaw');
     expect(scripts['package:prepare']).toContain('bundle:openclaw-plugins');
     expect(scripts['package:prepare']).toContain('bundle:preinstalled-skills');
+    expect(scripts['package:prepare']).toContain('model:download');
 
     expect(scripts['package:mac:ci']).toContain('--publish never');
     expect(scripts['package:win:ci']).toContain('--publish never');
