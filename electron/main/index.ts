@@ -48,7 +48,7 @@ import { browserOAuthManager } from '../utils/browser-oauth';
 import { syncAllProviderAuthToRuntime } from '../services/providers/provider-runtime-sync';
 import { McpRuntimeManager } from '../services/mcp/runtime-manager';
 import { SessionRuntimeManager, type RuntimeSessionRecord } from '../services/session-runtime-manager';
-import { shouldAllowCameraPermission } from './media-permissions';
+import { shouldAllowMediaPermission } from './media-permissions';
 import { scheduleImageSearchSemanticPrewarm } from '../services/image-search/prewarm';
 import { scheduleImageSearchAutoIndex } from '../services/image-search/auto-index';
 import { getImageIndexManager } from '../services/image-search/image-index-manager';
@@ -500,7 +500,7 @@ async function initialize(): Promise<void> {
   const window = createMainWindow();
 
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => (
-    shouldAllowCameraPermission({
+    shouldAllowMediaPermission({
       permission,
       isMainWindowWebContents: webContents === window.webContents,
       requestingUrl: requestingOrigin,
@@ -509,7 +509,7 @@ async function initialize(): Promise<void> {
   ));
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    callback(shouldAllowCameraPermission({
+    callback(shouldAllowMediaPermission({
       permission,
       isMainWindowWebContents: webContents === window.webContents,
       requestingUrl: details.requestingUrl,

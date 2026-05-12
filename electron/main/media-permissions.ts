@@ -1,11 +1,11 @@
-export interface CameraPermissionDecisionInput {
+export interface MediaPermissionDecisionInput {
   permission: string;
   isMainWindowWebContents: boolean;
   requestingUrl?: string;
   mediaTypes?: string[];
 }
 
-export function shouldAllowCameraPermission(input: CameraPermissionDecisionInput): boolean {
+export function shouldAllowMediaPermission(input: MediaPermissionDecisionInput): boolean {
   if (input.permission !== 'media') {
     return false;
   }
@@ -18,13 +18,20 @@ export function shouldAllowCameraPermission(input: CameraPermissionDecisionInput
     ? input.mediaTypes.map((value) => value.toLowerCase())
     : [];
 
-  if (!mediaTypes.includes('video')) {
-    return false;
+  // Permit video-only (Phase 18 camera)
+  if (mediaTypes.includes('video') && !mediaTypes.includes('audio')) {
+    return true;
   }
 
-  if (mediaTypes.includes('audio')) {
-    return false;
+  // Permit audio-only (Phase 20 ASR microphone)
+  if (mediaTypes.includes('audio') && !mediaTypes.includes('video')) {
+    return true;
   }
 
-  return true;
+  // Permit audio+video combined (future use — currently no consumer)
+  if (mediaTypes.includes('video') && mediaTypes.includes('audio')) {
+    return true;
+  }
+
+  return false;
 }
