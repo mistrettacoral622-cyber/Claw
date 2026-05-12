@@ -36,6 +36,11 @@ describe('E2E / release smoke guardrails', () => {
     expect(scripts['smoke:linux']).toContain('package:linux:smoke');
   });
 
+  it('keeps transformers externalized from the packaged Electron main bundle path', () => {
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+    expect(viteConfig).toContain("'@xenova/transformers'");
+  });
+
   it('includes Linux release/install smoke scripts', () => {
     expect(existsSync(resolve(process.cwd(), 'scripts/smoke/release-smoke.mjs'))).toBe(true);
     expect(existsSync(resolve(process.cwd(), 'scripts/smoke/install-smoke-linux.mjs'))).toBe(true);

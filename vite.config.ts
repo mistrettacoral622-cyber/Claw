@@ -16,7 +16,7 @@ export default defineConfig(({ command }) => {
   const mainProcessExternal =
     command === 'serve'
       ? isMainProcessExternal
-      : ['electron', 'bufferutil', 'utf-8-validate', 'better-sqlite3', 'sqlite-vec'];
+      : ['electron', 'bufferutil', 'utf-8-validate', 'better-sqlite3', 'sqlite-vec', '@xenova/transformers'];
 
   return {
   // Required for Electron: all asset URLs must be relative because the renderer
