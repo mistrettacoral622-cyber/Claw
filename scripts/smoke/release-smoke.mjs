@@ -80,6 +80,10 @@ if (existsSync(linuxUnpackedDir)) {
     'resources/openclaw/package.json',
     'resources/openclaw/node_modules',
     'resources/openclaw-plugins',
+    'resources/resources/asr-models/Xenova/whisper-tiny/config.json',
+    'resources/resources/asr-models/Xenova/whisper-tiny/onnx/encoder_model_quantized.onnx',
+    'resources/node_modules/@xenova/transformers/package.json',
+    'resources/node_modules/onnxruntime-node/dist/binding.js',
   ];
 
   for (const rel of unpackedChecks) {

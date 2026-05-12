@@ -887,7 +887,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="w-full max-w-full">
+      <div className="mx-auto w-full max-w-[860px]">
         {/* Attachment Previews */}
         {attachments.length > 0 && (
           <div className="flex gap-2 mb-3 flex-wrap">

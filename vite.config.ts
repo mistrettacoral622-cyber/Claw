@@ -38,6 +38,7 @@ export default defineConfig(({ command }) => {
         vite: {
           build: {
             outDir: 'dist-electron/main',
+            emptyOutDir: true,
             rollupOptions: {
               // Dev mode should externalize almost all non-local modules so Electron
               // main cold-start does not rebundle the whole runtime dependency graph.

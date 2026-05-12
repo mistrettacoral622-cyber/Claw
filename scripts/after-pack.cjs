@@ -488,7 +488,15 @@ exports.default = async function afterPack(context) {
     console.log(`[after-pack] ✅ Repaired ${nestedRepairCount} nested dependency edge case(s).`);
   }
 
-  const RUNTIME_NATIVE_MODULES = ['better-sqlite3', 'sqlite-vec', '@xenova/transformers'];
+  const RUNTIME_NATIVE_MODULES = [
+    'better-sqlite3',
+    'sqlite-vec',
+    '@xenova/transformers',
+    'onnxruntime-node',
+    'onnxruntime-common',
+    'onnxruntime-web',
+    '@huggingface/jinja',
+  ];
   mkdirSync(runtimeNodeModulesRoot, { recursive: true });
   for (const npmName of RUNTIME_NATIVE_MODULES) {
     const runtimeDestDir = join(runtimeNodeModulesRoot, ...npmName.split('/'));
