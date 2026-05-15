@@ -1083,22 +1083,28 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   modelOptions={modelOptions}
                   currentAgent={currentAgent}
                   onSelect={async (model) => {
-                    if (currentAgent) {
-                      await updateAgent(currentAgent.id, { model });
-                      const sessionModel = model || 'default';
-                      const effectiveSessionKey = currentSessionKey || currentAgent.mainSessionKey;
-                      if (effectiveSessionKey) {
-                        await invokeIpc(
-                          'gateway:rpc',
-                          'sessions.patch',
-                          {
-                            sessionKey: effectiveSessionKey,
-                            model: sessionModel,
-                          },
-                        );
+                    try {
+                      if (currentAgent) {
+                        const effectiveSessionKey = currentSessionKey || currentAgent.mainSessionKey;
+                        if (effectiveSessionKey) {
+                          const result = await invokeIpc<{ success: boolean; error?: string }>(
+                            'gateway:rpc',
+                            'sessions.patch',
+                            {
+                              key: effectiveSessionKey,
+                              model: model || null,
+                            },
+                          );
+                          if (!result.success) {
+                            throw new Error(result.error || 'Failed to switch session model.');
+                          }
+                        }
+                        await updateAgent(currentAgent.id, { model });
                       }
+                      setModelPickerOpen(false);
+                    } catch (error) {
+                      toast.error(`Failed to switch model: ${String(error)}`);
                     }
-                    setModelPickerOpen(false);
                   }}
                   onClose={() => setModelPickerOpen(false)}
                 />,

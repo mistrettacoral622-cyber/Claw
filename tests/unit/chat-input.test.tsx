@@ -660,7 +660,7 @@ describe('ChatInput agent targeting', () => {
     });
     agentsState.updateAgent = updateAgentMock;
 
-    invokeIpcMock.mockResolvedValue(undefined);
+    invokeIpcMock.mockResolvedValue({ success: true });
 
     render(<ChatInput onSend={vi.fn()} />);
 
@@ -675,8 +675,111 @@ describe('ChatInput agent targeting', () => {
       'gateway:rpc',
       'sessions.patch',
       {
-        sessionKey: 'agent:main:main',
+        key: 'agent:main:main',
         model: 'moonshot/kimi-k2.5',
+      },
+    );
+  });
+
+  it('does not update the agent model when the session model override fails', async () => {
+    agentsState.agents = [
+      {
+        id: 'main',
+        name: 'Main',
+        isDefault: true,
+        model: 'deepseek/deepseek-chat',
+        modelDisplay: 'DeepSeek Chat',
+        inheritedModel: false,
+        workspace: '~/.openclaw/workspace',
+        agentDir: '~/.openclaw/agents/main/agent',
+        mainSessionKey: 'agent:main:main',
+        channelTypes: [],
+      },
+    ];
+    providerStoreState.accounts = [
+      {
+        id: 'moonshot-primary',
+        vendorId: 'moonshot',
+        label: 'Moonshot Primary',
+        model: 'kimi-k2.5',
+        enabled: true,
+      },
+    ];
+    providerStoreState.vendors = [
+      {
+        id: 'moonshot',
+        name: 'Moonshot',
+        defaultModelId: 'kimi-k2.5',
+      },
+    ];
+
+    const updateAgentMock = vi.fn();
+    agentsState.updateAgent = updateAgentMock;
+    invokeIpcMock.mockResolvedValue({ success: false, error: 'invalid model' });
+
+    render(<ChatInput onSend={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('chat-composer-model-pill'));
+    fireEvent.click(await screen.findByText('Moonshot / kimi-k2.5'));
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(expect.stringContaining('invalid model'));
+    });
+
+    expect(updateAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the current session model override when inheriting the default model', async () => {
+    agentsState.agents = [
+      {
+        id: 'main',
+        name: 'Main',
+        isDefault: true,
+        model: 'deepseek/deepseek-chat',
+        modelDisplay: 'DeepSeek Chat',
+        inheritedModel: false,
+        workspace: '~/.openclaw/workspace',
+        agentDir: '~/.openclaw/agents/main/agent',
+        mainSessionKey: 'agent:main:main',
+        channelTypes: [],
+      },
+    ];
+    providerStoreState.accounts = [
+      {
+        id: 'moonshot-primary',
+        vendorId: 'moonshot',
+        label: 'Moonshot Primary',
+        model: 'kimi-k2.5',
+        enabled: true,
+      },
+    ];
+    providerStoreState.vendors = [
+      {
+        id: 'moonshot',
+        name: 'Moonshot',
+        defaultModelId: 'kimi-k2.5',
+      },
+    ];
+
+    const updateAgentMock = vi.fn();
+    agentsState.updateAgent = updateAgentMock;
+    invokeIpcMock.mockResolvedValue({ success: true });
+
+    render(<ChatInput onSend={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('chat-composer-model-pill'));
+    fireEvent.click(await screen.findByText('继承默认模型'));
+
+    await waitFor(() => {
+      expect(updateAgentMock).toHaveBeenCalledWith('main', { model: '' });
+    });
+
+    expect(invokeIpcMock).toHaveBeenCalledWith(
+      'gateway:rpc',
+      'sessions.patch',
+      {
+        key: 'agent:main:main',
+        model: null,
       },
     );
   });
