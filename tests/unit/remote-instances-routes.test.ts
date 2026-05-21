@@ -211,6 +211,23 @@ describe('remote instance routes', () => {
     }));
   });
 
+  it('prefers real private LAN IPv4 addresses over virtual benchmark adapters', async () => {
+    const { selectBestLanIpv4Address } = await import('@electron/api/routes/remote-instances');
+
+    expect(selectBestLanIpv4Address({
+      Meta: [{
+        address: '198.18.0.1',
+        family: 'IPv4',
+        internal: false,
+      }],
+      WLAN: [{
+        address: '10.101.208.208',
+        family: 'IPv4',
+        internal: false,
+      }],
+    } as never)).toBe('10.101.208.208');
+  });
+
   it('updates self inbound A2A settings and restarts the Gateway when network bind changes', async () => {
     parseJsonBodyMock.mockResolvedValue({
       enabled: true,
@@ -575,7 +592,7 @@ describe('remote instance routes', () => {
     }, {
       message: 'Continue the remote task',
       contextId: 'ctx-123',
-      taskId: 'task-123',
+      taskId: undefined,
       timeout: undefined,
       data: undefined,
       files: undefined,
@@ -594,6 +611,52 @@ describe('remote instance routes', () => {
         tool: 'a2a_send_message',
         raw: { id: 'task-456', contextId: 'ctx-456' },
       }),
+    }));
+  });
+
+  it('only attaches to a remote A2A task when explicitly requested', async () => {
+    parseJsonBodyMock.mockResolvedValue({
+      message: 'Provide requested input',
+      context_id: 'ctx-123',
+      task_id: 'task-123',
+      attachToTask: true,
+    });
+    getRemoteInstanceMock.mockResolvedValue({
+      id: 'ri-6',
+      displayName: 'Remote 6',
+      agentCardUrl: 'https://remote.example/card.json',
+      auth: { mode: 'none', headers: {} },
+    });
+    sendRemoteInstanceMessageMock.mockResolvedValue({
+      success: true,
+      tool: 'a2a_send_message',
+      agent_id: 'ri-6',
+      agentId: 'ri-6',
+      context_id: 'ctx-123',
+      contextId: 'ctx-123',
+      task_id: 'task-123',
+      taskId: 'task-123',
+      state: 'input-required',
+      status: { state: 'input-required' },
+      message: null,
+      messages: [],
+      artifacts: [],
+      raw: { id: 'task-123', contextId: 'ctx-123' },
+    });
+
+    const { handleRemoteInstanceRoutes } = await import('@electron/api/routes/remote-instances');
+
+    const handled = await handleRemoteInstanceRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/remote-instances/ri-6/conversation/messages'),
+      createCtx(),
+    );
+
+    expect(handled).toBe(true);
+    expect(sendRemoteInstanceMessageMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      contextId: 'ctx-123',
+      taskId: 'task-123',
     }));
   });
 

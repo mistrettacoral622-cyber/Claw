@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 import { PORTS } from '../../utils/config';
@@ -57,6 +57,7 @@ type SendRemoteInstanceMessageBody = {
   contextId?: string | null;
   task_id?: string | null;
   taskId?: string | null;
+  attachToTask?: boolean;
   timeout?: number;
   data?: unknown[];
   files?: string[];
@@ -127,15 +128,103 @@ function maskSecret(value: string): string {
   return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
-function getFirstLanIpv4Address(): string | null {
-  for (const entries of Object.values(networkInterfaces())) {
+function parseIpv4Octets(address: string): [number, number, number, number] | null {
+  const parts = address.split('.');
+  if (parts.length !== 4) {
+    return null;
+  }
+
+  const octets = parts.map((part) => Number(part));
+  return octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)
+    ? octets as [number, number, number, number]
+    : null;
+}
+
+function isPrivateLanIpv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
+    return false;
+  }
+
+  const [first, second] = octets;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}
+
+function isReservedOrVirtualIpv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
+    return true;
+  }
+
+  const [first, second] = octets;
+  return first === 0
+    || first === 127
+    || (first === 169 && second === 254)
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 198 && (second === 18 || second === 19))
+    || first >= 224;
+}
+
+function scoreInterfaceName(name: string): number {
+  const normalized = name.toLowerCase();
+  const virtualMarkers = [
+    'docker',
+    'hyper-v',
+    'loopback',
+    'meta',
+    'tailscale',
+    'utun',
+    'vbox',
+    'virtual',
+    'vmware',
+    'wsl',
+    'zerotier',
+  ];
+  if (virtualMarkers.some((marker) => normalized.includes(marker))) {
+    return -50;
+  }
+
+  const preferredMarkers = ['ethernet', 'wi-fi', 'wifi', 'wlan', 'wireless'];
+  if (preferredMarkers.some((marker) => normalized.includes(marker))) {
+    return 20;
+  }
+
+  return /^(en|eth)\d*/.test(normalized) ? 10 : 0;
+}
+
+function scoreLanIpv4Candidate(name: string, address: string): number {
+  if (isReservedOrVirtualIpv4(address)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  return (isPrivateLanIpv4(address) ? 100 : 10) + scoreInterfaceName(name);
+}
+
+export function selectBestLanIpv4Address(interfaces: ReturnType<typeof networkInterfaces>): string | null {
+  const candidates: Array<{ address: string; score: number; index: number }> = [];
+  let index = 0;
+
+  for (const [name, entries] of Object.entries(interfaces)) {
     for (const entry of entries ?? []) {
-      if (entry.family === 'IPv4' && !entry.internal && entry.address) {
-        return entry.address;
+      const info = entry as NetworkInterfaceInfo;
+      if (info.family === 'IPv4' && !info.internal && info.address) {
+        const score = scoreLanIpv4Candidate(name, info.address);
+        if (Number.isFinite(score)) {
+          candidates.push({ address: info.address, score, index });
+        }
+        index += 1;
       }
     }
   }
-  return null;
+
+  candidates.sort((left, right) => right.score - left.score || left.index - right.index);
+  return candidates[0]?.address ?? null;
+}
+
+function getFirstLanIpv4Address(): string | null {
+  return selectBestLanIpv4Address(networkInterfaces());
 }
 
 function buildInboundUrl(baseUrl: string, path: string): string {
@@ -557,7 +646,9 @@ async function sendConversationMessage(instanceId: string, req: IncomingMessage)
   const result = await sendRemoteInstanceMessage(instance, {
     message,
     contextId: normalizeOptionalString(body.context_id) ?? normalizeOptionalString(body.contextId),
-    taskId: normalizeOptionalString(body.task_id) ?? normalizeOptionalString(body.taskId),
+    taskId: body.attachToTask === true
+      ? normalizeOptionalString(body.task_id) ?? normalizeOptionalString(body.taskId)
+      : undefined,
     timeout: normalizePositiveNumber(body.timeout),
     data: normalizeUnknownList(body.data),
     files: normalizeStringList(body.files),

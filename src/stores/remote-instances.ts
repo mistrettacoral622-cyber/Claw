@@ -1226,8 +1226,6 @@ export const useRemoteInstancesStore = create<RemoteInstancesState>((set, get) =
             message: text,
             contextId: existingThread.contextId,
             context_id: existingThread.contextId,
-            taskId: existingThread.taskId,
-            task_id: existingThread.taskId,
           }),
         },
       );

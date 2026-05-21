@@ -312,6 +312,49 @@ function assertA2AToolSuccess(result: A2AToolResult): void {
   throw new Error(message);
 }
 
+function extractRuntimeAgentLoadError(result: unknown, agentId: string): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return null;
+  }
+
+  const row = result as Record<string, unknown>;
+  if (row.error === true) {
+    return extractString(row, ['error_message', 'errorMessage', 'message'])
+      ?? 'A2A runtime failed to list agents';
+  }
+
+  const errors = extractObject(row, 'errors');
+  const agentError = extractString(errors, [agentId]);
+  if (agentError) {
+    return agentError;
+  }
+
+  const agents = extractObject(row, 'agents') ?? row;
+  if (Object.prototype.hasOwnProperty.call(agents, agentId)) {
+    return null;
+  }
+
+  const available = Object.keys(agents)
+    .filter((key) => key !== 'errors')
+    .sort();
+  return `A2A runtime did not load agent '${agentId}'. Available agents: ${available.length > 0 ? available.join(', ') : '(none)'}`;
+}
+
+async function assertA2ARuntimeAgentLoaded(
+  tools: A2AToolsInstance,
+  instance: RemoteInstanceRecord,
+): Promise<void> {
+  const result = await tools.getAgents.execute();
+  const loadError = extractRuntimeAgentLoadError(result, instance.id);
+  if (!loadError) {
+    return;
+  }
+
+  throw new Error(
+    `Failed to initialize remote agent '${instance.displayName || instance.id}' from ${instance.agentCardUrl}: ${loadError}`,
+  );
+}
+
 async function createRemoteInstanceA2ATools(instance: RemoteInstanceRecord): Promise<A2AToolsInstance> {
   const {
     A2AAgents,
@@ -341,6 +384,7 @@ export async function sendRemoteInstanceMessage(
 ): Promise<RemoteInstanceRuntimeResult> {
   await syncRemoteInstancesToA2APlugin([instance]);
   const tools = await createRemoteInstanceA2ATools(instance);
+  await assertA2ARuntimeAgentLoaded(tools, instance);
   const raw = await tools.sendMessage.execute({
     agentId: instance.id,
     message: input.message,
@@ -360,6 +404,7 @@ export async function getRemoteInstanceTask(
 ): Promise<RemoteInstanceRuntimeResult> {
   await syncRemoteInstancesToA2APlugin([instance]);
   const tools = await createRemoteInstanceA2ATools(instance);
+  await assertA2ARuntimeAgentLoaded(tools, instance);
   const raw = await tools.getTask.execute({
     agentId: instance.id,
     taskId: input.taskId,

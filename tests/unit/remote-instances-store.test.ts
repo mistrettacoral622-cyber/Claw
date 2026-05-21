@@ -32,7 +32,7 @@ describe('remote instances store conversation flow', () => {
     useRemoteInstancesStore.getState().reset();
   });
 
-  it('sends through Host API and stores context_id/task_id for follow-up turns', async () => {
+  it('sends through Host API and stores context_id while avoiding completed task attachment on follow-up turns', async () => {
     vi.mocked(hostApiFetch)
       .mockResolvedValueOnce({
         conversation: {
@@ -78,6 +78,14 @@ describe('remote instances store conversation flow', () => {
         body: expect.stringContaining('"context_id":"ctx-1"'),
       }),
     );
+    const secondBody = JSON.parse(vi.mocked(hostApiFetch).mock.calls[1]?.[1]?.body as string) as Record<string, unknown>;
+    expect(secondBody).toMatchObject({
+      message: 'Continue',
+      context_id: 'ctx-1',
+      contextId: 'ctx-1',
+    });
+    expect(secondBody).not.toHaveProperty('task_id');
+    expect(secondBody).not.toHaveProperty('taskId');
 
     const thread = useRemoteInstancesStore.getState().threadsByInstanceId['remote-1'];
     expect(thread.contextId).toBe('ctx-1');
