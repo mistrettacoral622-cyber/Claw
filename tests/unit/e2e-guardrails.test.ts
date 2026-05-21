@@ -59,6 +59,18 @@ describe('E2E / release smoke guardrails', () => {
     }
   });
 
+  it('patches A2A utility package exports in plugin packaging paths', () => {
+    const bundlePlugins = readFileSync(resolve(process.cwd(), 'scripts/bundle-openclaw-plugins.mjs'), 'utf8');
+    const afterPack = readFileSync(resolve(process.cwd(), 'scripts/after-pack.cjs'), 'utf8');
+
+    for (const content of [bundlePlugins, afterPack]) {
+      expect(content).toContain('patchA2AUtilsPackageExports');
+      expect(content).toContain('@a2anet');
+      expect(content).toContain('a2a-utils');
+      expect(content).toContain('rootExport.require');
+    }
+  });
+
   it('runs Playwright and Linux release/install smoke in the main CI workflow', () => {
     const checkWorkflow = readFileSync(resolve(process.cwd(), '.github/workflows/check.yml'), 'utf8');
 

@@ -170,6 +170,7 @@ function bundleOnePlugin({ npmName, pluginId }) {
   }
 
   const manifestPath = path.join(outputDir, 'openclaw.plugin.json');
+  patchA2AUtilsPackageExports(outputNodeModules);
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`Missing openclaw.plugin.json in bundled plugin output: ${pluginId}`);
   }
@@ -182,6 +183,43 @@ fs.mkdirSync(OUTPUT_ROOT, { recursive: true });
 
 for (const plugin of PLUGINS) {
   bundleOnePlugin(plugin);
+}
+
+function patchA2AUtilsPackageExports(nodeModulesDir) {
+  const pkgPath = path.join(nodeModulesDir, '@a2anet', 'a2a-utils', 'package.json');
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const rootExport = pkg.exports && pkg.exports['.'];
+    if (!rootExport || typeof rootExport !== 'object') return false;
+
+    const importTarget = typeof rootExport.import === 'string'
+      ? rootExport.import
+      : typeof rootExport.default === 'string'
+        ? rootExport.default
+        : typeof pkg.main === 'string'
+          ? pkg.main
+          : './dist/index.js';
+
+    let changed = false;
+    if (typeof rootExport.require !== 'string') {
+      rootExport.require = importTarget;
+      changed = true;
+    }
+    if (typeof rootExport.default !== 'string') {
+      rootExport.default = importTarget;
+      changed = true;
+    }
+    if (!changed) return false;
+
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+    echo`   Patched @a2anet/a2a-utils exports for CJS compatibility`;
+    return true;
+  } catch (err) {
+    echo`   Failed to patch @a2anet/a2a-utils exports: ${err.message}`;
+    return false;
+  }
 }
 
 // Fix bare ESM relative specifiers in the Feishu plugin.

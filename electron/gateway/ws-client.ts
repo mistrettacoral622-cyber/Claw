@@ -12,13 +12,18 @@ export const DEFAULT_GATEWAY_READY_RETRIES = 60;
 export const DEFAULT_GATEWAY_READY_INTERVAL_MS = 250;
 export const DEFAULT_GATEWAY_READY_PROBE_TIMEOUT_MS = 1000;
 export const DEFAULT_GATEWAY_READY_MAX_RETRIES = process.platform === 'win32' ? 144 : DEFAULT_GATEWAY_READY_RETRIES;
+export const LOCAL_GATEWAY_WS_HOST = '127.0.0.1';
+
+function buildLocalGatewayWsUrl(port: number): string {
+  return `ws://${LOCAL_GATEWAY_WS_HOST}:${port}/ws`;
+}
 
 export async function probeGatewayReady(
   port: number,
   timeoutMs = 1500,
 ): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    const testWs = new WebSocket(`ws://localhost:${port}/ws`);
+    const testWs = new WebSocket(buildLocalGatewayWsUrl(port));
     let settled = false;
 
     const resolveOnce = (value: boolean) => {
@@ -206,10 +211,10 @@ export async function connectGatewaySocket(options: {
   onMessage: (message: unknown) => void;
   onCloseAfterHandshake: () => void;
 }): Promise<WebSocket> {
-  logger.debug(`Connecting Gateway WebSocket (ws://localhost:${options.port}/ws)`);
+  logger.debug(`Connecting Gateway WebSocket (${buildLocalGatewayWsUrl(options.port)})`);
 
   return await new Promise<WebSocket>((resolve, reject) => {
-    const wsUrl = `ws://localhost:${options.port}/ws`;
+    const wsUrl = buildLocalGatewayWsUrl(options.port);
     const ws = new WebSocket(wsUrl);
     let handshakeComplete = false;
     let connectId: string | null = null;

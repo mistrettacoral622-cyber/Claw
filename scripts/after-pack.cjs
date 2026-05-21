@@ -295,8 +295,50 @@ function patchBrokenModules(nodeModulesDir) {
     }
   }
 
+  if (patchA2AUtilsPackageExports(nodeModulesDir)) {
+    count++;
+  }
+
   if (count > 0) {
     console.log(`[after-pack] 🩹 Patched ${count} broken module(s) in ${nodeModulesDir}`);
+  }
+}
+
+function patchA2AUtilsPackageExports(nodeModulesDir) {
+  const { writeFileSync, readFileSync } = require('fs');
+  const pkgPath = join(nodeModulesDir, '@a2anet', 'a2a-utils', 'package.json');
+  if (!existsSync(pkgPath)) return false;
+
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    const rootExport = pkg.exports && pkg.exports['.'];
+    if (!rootExport || typeof rootExport !== 'object') return false;
+
+    const importTarget = typeof rootExport.import === 'string'
+      ? rootExport.import
+      : typeof rootExport.default === 'string'
+        ? rootExport.default
+        : typeof pkg.main === 'string'
+          ? pkg.main
+          : './dist/index.js';
+
+    let changed = false;
+    if (typeof rootExport.require !== 'string') {
+      rootExport.require = importTarget;
+      changed = true;
+    }
+    if (typeof rootExport.default !== 'string') {
+      rootExport.default = importTarget;
+      changed = true;
+    }
+    if (!changed) return false;
+
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+    console.log('[after-pack] Patched @a2anet/a2a-utils exports for CJS compatibility');
+    return true;
+  } catch (err) {
+    console.warn('[after-pack] Failed to patch @a2anet/a2a-utils exports:', err.message);
+    return false;
   }
 }
 
@@ -526,6 +568,7 @@ exports.default = async function afterPack(context) {
     const ok = bundlePlugin(nodeModulesRoot, npmName, pluginDestDir);
     if (ok) {
       const pluginNM = join(pluginDestDir, 'node_modules');
+      patchA2AUtilsPackageExports(pluginNM);
       cleanupUnnecessaryFiles(pluginDestDir);
       if (existsSync(pluginNM)) {
         cleanupKoffi(pluginNM, platform, arch);

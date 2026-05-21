@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import path from 'path';
-import { existsSync, readFileSync, cpSync, mkdirSync, rmSync, readdirSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, cpSync, mkdirSync, rmSync, readdirSync, realpathSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { getAllSettings } from '../utils/store';
 import { getApiKey, getDefaultProvider, getProvider } from '../utils/secure-storage';
@@ -52,6 +52,50 @@ function readPluginVersion(pkgJsonPath: string): string | null {
     return parsed.version ?? null;
   } catch {
     return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function patchA2AUtilsPackageExportsForNodeModules(nodeModulesDir: string): boolean {
+  const pkgJsonPath = join(nodeModulesDir, '@a2anet', 'a2a-utils', 'package.json');
+  if (!existsSync(pkgJsonPath)) return false;
+
+  try {
+    const parsed = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as Record<string, unknown>;
+    const exportsField = parsed.exports;
+    if (!isRecord(exportsField)) return false;
+
+    const rootExport = exportsField['.'];
+    if (!isRecord(rootExport)) return false;
+
+    const importTarget = typeof rootExport.import === 'string'
+      ? rootExport.import
+      : typeof rootExport.default === 'string'
+        ? rootExport.default
+        : typeof parsed.main === 'string'
+          ? parsed.main
+          : './dist/index.js';
+
+    let changed = false;
+    if (typeof rootExport.require !== 'string') {
+      rootExport.require = importTarget;
+      changed = true;
+    }
+    if (typeof rootExport.default !== 'string') {
+      rootExport.default = importTarget;
+      changed = true;
+    }
+    if (!changed) return false;
+
+    writeFileSync(pkgJsonPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+    logger.info(`[plugin] Patched @a2anet/a2a-utils package exports at ${pkgJsonPath}`);
+    return true;
+  } catch (error) {
+    logger.warn(`[plugin] Failed to patch @a2anet/a2a-utils package exports at ${pkgJsonPath}:`, error);
+    return false;
   }
 }
 
@@ -159,6 +203,7 @@ function copyPluginFromNodeModules(npmPkgPath: string, targetDir: string, npmNam
   }
 
   logger.info(`[plugin] Copied ${copiedNames.size} deps for ${npmName}`);
+  patchA2AUtilsPackageExportsForNodeModules(outputNM);
 }
 
 function buildBundledPluginSources(pluginDirName: string): string[] {
@@ -230,11 +275,13 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
           }
           rmSync(targetDir, { recursive: true, force: true });
           cpSync(bundledDir, targetDir, { recursive: true, dereference: true });
+          patchA2AUtilsPackageExportsForNodeModules(join(targetDir, 'node_modules'));
           patchInstalledPluginCompat();
         } catch (err) {
           logger.warn(`[plugin] Failed to auto-upgrade ${channelType} plugin:`, err);
         }
       }
+      patchA2AUtilsPackageExportsForNodeModules(join(targetDir, 'node_modules'));
       patchInstalledPluginCompat();
       continue;
     }
@@ -303,10 +350,12 @@ function ensureOptionalPluginsUpgraded(pluginIds: string[]): void {
           mkdirSync(join(getOpenClawConfigDir(), 'extensions'), { recursive: true });
           rmSync(targetDir, { recursive: true, force: true });
           cpSync(bundledDir, targetDir, { recursive: true, dereference: true });
+          patchA2AUtilsPackageExportsForNodeModules(join(targetDir, 'node_modules'));
         } catch (err) {
           logger.warn(`[plugin] Failed to auto-upgrade optional plugin ${pluginId}:`, err);
         }
       }
+      patchA2AUtilsPackageExportsForNodeModules(join(targetDir, 'node_modules'));
       continue;
     }
 
