@@ -134,6 +134,7 @@ describe('Settings route convergence', () => {
 
   it.each([
     ['/settings?section=memory-knowledge', 'memory-knowledge'],
+    ['/settings?section=remote-instances', 'remote-instances'],
     ['/settings?section=skills-mcp', 'skills-mcp'],
     ['/settings?section=about', 'about'],
   ] as const)('activates the requested canonical section for %s', async (entry, sectionId) => {

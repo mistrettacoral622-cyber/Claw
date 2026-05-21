@@ -511,6 +511,7 @@ exports.default = async function afterPack(context) {
   //       directory doesn't exist (build/openclaw-plugins/ may not be pre-generated)
   //     - node_modules/ is excluded by .gitignore so the deps copy must be manual
   const BUNDLED_PLUGINS = [
+    { npmName: '@a2anet/openclaw-a2a-plugin', pluginId: 'a2a' },
     { npmName: '@soimy/dingtalk', pluginId: 'dingtalk' },
     { npmName: '@wecom/wecom-openclaw-plugin', pluginId: 'wecom' },
     { npmName: '@sliverp/qqbot', pluginId: 'qqbot' },

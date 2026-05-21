@@ -17,6 +17,7 @@ const AgentDetail = lazy(() => import('./pages/AgentDetail').then((m) => ({ defa
 const Channels = lazy(() => import('./pages/Channels').then((m) => ({ default: m.Channels })));
 const Cron = lazy(() => import('./pages/Cron').then((m) => ({ default: m.Cron })));
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
+const RemoteInstances = lazy(() => import('./pages/RemoteInstances').then((m) => ({ default: m.RemoteInstances })));
 const TeamOverview = lazy(() => import('./pages/TeamOverview').then((m) => ({ default: m.TeamOverview })));
 const TeamMap = lazy(() => import('./pages/TeamMap').then((m) => ({ default: m.TeamMap })));
 const TaskKanban = lazy(() => import('./pages/TaskKanban').then((m) => ({ default: m.TaskKanban })));
@@ -216,6 +217,7 @@ function App() {
             <Route path="models" element={<Navigate to="/settings?section=models-providers" replace />} />
             <Route path="agents" element={<Agents />} />
             <Route path="agents/:agentId" element={<AgentDetail />} />
+            <Route path="remote-instances" element={<RemoteInstances />} />
             <Route path="channels" element={<Channels />} />
             <Route path="skills" element={<Navigate to="/settings?section=skills-mcp" replace />} />
             <Route path="cron" element={<Cron />} />

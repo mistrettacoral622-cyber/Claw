@@ -162,7 +162,7 @@ describe('Settings center', () => {
     });
   });
 
-  it('renders the canonical 9-item settings IA without legacy top-level groups', async () => {
+  it('renders the canonical settings IA with remote instances and without legacy top-level groups', async () => {
     const { container } = render(
       <MemoryRouter>
         <Settings />
@@ -170,13 +170,16 @@ describe('Settings center', () => {
     );
 
     const topLevelItems = getTopLevelNavItems();
-    expect(topLevelItems).toHaveLength(9);
+    expect(topLevelItems).toHaveLength(10);
     expect(topLevelItems[0]?.id).toBe('costs-usage');
     expect(enSettings.settingsShell.items['costs-usage'].label).toBe('Costs & Usage');
+    expect(topLevelItems[3]?.id).toBe('remote-instances');
+    expect(enSettings.settingsShell.items['remote-instances'].label).toBe('Remote Instances');
     expect(topLevelItems.at(-1)?.id).toBe('about');
     expect(enSettings.settingsShell.items.about.label).toBe('About');
 
     expect(screen.getByRole('button', { name: getNavLabel('costs-usage') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: getNavLabel('remote-instances') })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: getNavLabel('about') })).toBeInTheDocument();
 
     for (const groupId of ['basic', 'workflow', 'capability', 'governance'] as const) {

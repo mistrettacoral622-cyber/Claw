@@ -5,6 +5,7 @@
  *
  * Build a self-contained mirror of OpenClaw third-party plugins for packaging.
  * Current plugins:
+ *   - @a2anet/openclaw-a2a-plugin -> build/openclaw-plugins/a2a
  *   - @soimy/dingtalk -> build/openclaw-plugins/dingtalk
  *   - @wecom/wecom-openclaw-plugin -> build/openclaw-plugins/wecom
  *
@@ -35,6 +36,7 @@ function normWin(p) {
 }
 
 const PLUGINS = [
+  { npmName: '@a2anet/openclaw-a2a-plugin', pluginId: 'a2a' },
   { npmName: '@soimy/dingtalk', pluginId: 'dingtalk' },
   { npmName: '@wecom/wecom-openclaw-plugin', pluginId: 'wecom' },
   { npmName: '@sliverp/qqbot', pluginId: 'qqbot' },

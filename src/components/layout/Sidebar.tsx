@@ -4,6 +4,7 @@ import {
   ChevronRight,
   LayoutDashboard,
   MessageSquare,
+  Network,
   PanelLeft,
   PanelLeftClose,
   Plus,
@@ -291,6 +292,11 @@ export function Sidebar() {
       label: tSidebar('employeeSquare', 'Employee square'),
       path: '/agents',
       icon: Bot,
+    },
+    {
+      label: tSidebar('remoteInstances', 'Remote instances'),
+      path: '/remote-instances',
+      icon: Network,
     },
   ];
 

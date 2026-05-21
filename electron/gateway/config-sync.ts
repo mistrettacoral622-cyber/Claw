@@ -41,6 +41,10 @@ const CHANNEL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> =
   wechat: { dirName: 'openclaw-weixin', npmName: '@tencent-weixin/openclaw-weixin' },
 };
 
+const OPTIONAL_PLUGIN_MAP: Record<string, { dirName: string; npmName: string }> = {
+  a2a: { dirName: 'a2a', npmName: '@a2anet/openclaw-a2a-plugin' },
+};
+
 function readPluginVersion(pkgJsonPath: string): string | null {
   try {
     const raw = readFileSync(pkgJsonPath, 'utf-8');
@@ -259,6 +263,72 @@ function ensureConfiguredPluginsUpgraded(configuredChannels: string[]): void {
   }
 }
 
+async function listEnabledOptionalPlugins(): Promise<string[]> {
+  try {
+    const configPath = join(getOpenClawConfigDir(), 'openclaw.json');
+    if (!existsSync(configPath)) return [];
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw) as {
+      plugins?: { allow?: string[]; entries?: Record<string, { enabled?: boolean }> };
+    };
+    const allow = Array.isArray(parsed.plugins?.allow) ? parsed.plugins?.allow : [];
+    const entries = parsed.plugins?.entries ?? {};
+    return Object.keys(OPTIONAL_PLUGIN_MAP).filter((pluginId) => (
+      allow.includes(pluginId)
+      || (entries[pluginId]?.enabled !== false && entries[pluginId] != null)
+    ));
+  } catch (error) {
+    logger.warn('Failed to inspect optional OpenClaw plugins:', error);
+    return [];
+  }
+}
+
+function ensureOptionalPluginsUpgraded(pluginIds: string[]): void {
+  for (const pluginId of pluginIds) {
+    const pluginInfo = OPTIONAL_PLUGIN_MAP[pluginId];
+    if (!pluginInfo) continue;
+    const { dirName, npmName } = pluginInfo;
+    const targetDir = join(getOpenClawConfigDir(), 'extensions', dirName);
+    const targetManifest = join(targetDir, 'openclaw.plugin.json');
+    const isInstalled = existsSync(targetManifest);
+    const installedVersion = isInstalled ? readPluginVersion(join(targetDir, 'package.json')) : null;
+
+    const bundledSources = buildBundledPluginSources(dirName);
+    const bundledDir = bundledSources.find((dir) => existsSync(join(dir, 'openclaw.plugin.json')));
+    if (bundledDir) {
+      const sourceVersion = readPluginVersion(join(bundledDir, 'package.json'));
+      if (!isInstalled || (sourceVersion && installedVersion && sourceVersion !== installedVersion)) {
+        logger.info(`[plugin] Auto-upgrading optional plugin ${pluginId}: ${installedVersion} → ${sourceVersion} (bundled)`);
+        try {
+          mkdirSync(join(getOpenClawConfigDir(), 'extensions'), { recursive: true });
+          rmSync(targetDir, { recursive: true, force: true });
+          cpSync(bundledDir, targetDir, { recursive: true, dereference: true });
+        } catch (err) {
+          logger.warn(`[plugin] Failed to auto-upgrade optional plugin ${pluginId}:`, err);
+        }
+      }
+      continue;
+    }
+
+    if (!app.isPackaged) {
+      const npmPkgPath = join(process.cwd(), 'node_modules', ...npmName.split('/'));
+      if (!existsSync(join(npmPkgPath, 'openclaw.plugin.json'))) continue;
+      const sourceVersion = readPluginVersion(join(npmPkgPath, 'package.json'));
+      if (!sourceVersion) continue;
+      if (isInstalled && installedVersion && sourceVersion === installedVersion) continue;
+
+      logger.info(`[plugin] Auto-upgrading optional plugin ${pluginId}: ${installedVersion} → ${sourceVersion} (dev/node_modules)`);
+      try {
+        mkdirSync(join(getOpenClawConfigDir(), 'extensions'), { recursive: true });
+        rmSync(targetDir, { recursive: true, force: true });
+        copyPluginFromNodeModules(npmPkgPath, targetDir, npmName);
+      } catch (err) {
+        logger.warn(`[plugin] Failed to auto-upgrade optional plugin ${pluginId} from node_modules:`, err);
+      }
+    }
+  }
+}
+
 // ── Pre-launch sync ──────────────────────────────────────────────
 
 export async function syncGatewayConfigBeforeLaunch(
@@ -279,6 +349,13 @@ export async function syncGatewayConfigBeforeLaunch(
     ensureConfiguredPluginsUpgraded(configuredChannels);
   } catch (err) {
     logger.warn('Failed to auto-upgrade plugins:', err);
+  }
+
+  try {
+    const optionalPlugins = await listEnabledOptionalPlugins();
+    ensureOptionalPluginsUpgraded(optionalPlugins);
+  } catch (err) {
+    logger.warn('Failed to auto-upgrade optional plugins:', err);
   }
 
   try {

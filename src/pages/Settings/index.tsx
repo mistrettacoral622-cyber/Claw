@@ -13,6 +13,7 @@ import { SettingsModelsProvidersPanel } from '@/components/settings-center/setti
 import { SettingsAppUpdatesPanel } from '@/components/settings-center/settings-app-updates-panel';
 import { SettingsAboutPanel } from '@/components/settings-center/settings-about-panel';
 import { SettingsGeneralPanel } from '@/components/settings-center/settings-general-panel';
+import { SettingsRemoteInstancesPanel } from '@/components/settings-center/settings-remote-instances-panel';
 import { SettingsToolPermissionsPanel as CanonicalSettingsToolPermissionsPanel } from '@/components/settings-center/settings-tool-permissions-panel';
 import { ProvidersSettings } from '@/components/settings/ProvidersSettings';
 import { McpTab } from '@/pages/Skills/McpTab';
@@ -386,6 +387,9 @@ function renderActiveSection(args: Omit<RenderSectionArgs, 'activeSection'> & { 
 
     case 'general':
       return <SettingsGeneralPanel />;
+
+    case 'remote-instances':
+      return <SettingsRemoteInstancesPanel />;
 
     case 'tool-permissions':
       return <CanonicalSettingsToolPermissionsPanel />;

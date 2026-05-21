@@ -321,6 +321,9 @@
       "general": {
         "label": "General"
       },
+      "remote-instances": {
+        "label": "Remote Instances"
+      },
       "skills-mcp": {
         "label": "Skills & MCP"
       },
@@ -376,6 +379,11 @@
         "title": "General",
         "subtitle": "Manage appearance, language, identity, avatars, and default workspace behavior in one place.",
         "kicker": "Preferences and defaults"
+      },
+      "remote-instances": {
+        "title": "Remote Instances",
+        "subtitle": "Add, verify, and maintain connected KTClaw or OpenClaw endpoints without leaving the canonical settings shell.",
+        "kicker": "Connection setup"
       },
       "memory-knowledge": {
         "title": "Memory Knowledge Base",
@@ -442,6 +450,153 @@
         "subtitle": "继续承载更新、Doctor 诊断和开发者模式等真实功能。",
         "kicker": "治理"
       }
+    }
+  },
+  "remoteInstances": {
+    "intro": {
+      "title": "Remote instance management",
+      "urlFirstTitle": "Start with an Agent Card URL",
+      "urlFirstDescription": "Connect the endpoint first, then fill in auth details only when the target actually needs them.",
+      "authLaterTitle": "Keep auth editing in the detail view",
+      "authLaterDescription": "Bearer tokens and custom headers stay editable after creation so the add flow remains lightweight."
+    },
+    "add": {
+      "title": "Add remote instance",
+      "agentCardUrlLabel": "Agent Card URL",
+      "agentCardUrlPlaceholder": "https://remote.example.com/.well-known/agent-card.json",
+      "displayNameLabel": "Display name",
+      "displayNamePlaceholder": "Optional workspace label",
+      "submit": "Add instance",
+      "helper": "The initial setup only needs the Agent Card URL. Connection auth can be added from the detail view after creation."
+    },
+    "self": {
+      "title": "My remote instance",
+      "descriptionTitle": "Share this KTClaw with other agents",
+      "description": "Expose this desktop as an inbound A2A endpoint, then give collaborators your Agent Card URL and access header.",
+      "enabledLabel": "Enable inbound",
+      "agentCardNameLabel": "Agent Card name",
+      "agentCardNamePlaceholder": "My KTClaw",
+      "agentCardDescriptionLabel": "Agent Card description",
+      "agentCardDescriptionPlaceholder": "Remote-controlled desktop agent",
+      "allowUnauthenticatedLabel": "Allow unauthenticated inbound",
+      "allowUnauthenticatedHint": "Use only on trusted private networks. Access keys are safer for shared links.",
+      "networkModeLabel": "Network access",
+      "networkModes": {
+        "local": "This computer only",
+        "lan": "Same Wi-Fi or LAN"
+      },
+      "networkLocalHint": "Keeps the Gateway bound to loopback. Other devices cannot connect directly.",
+      "networkLanHint": "Binds the Gateway to your LAN. Windows Firewall and the router/network must allow the port.",
+      "networkStatusLocal": "Local only",
+      "networkStatusLan": "LAN enabled",
+      "firewallBadge": "Firewall may prompt",
+      "save": "Save inbound settings",
+      "refresh": "Refresh",
+      "myAgentCardUrlTitle": "My Agent Card URL",
+      "myAgentCardUrlDescription": "Give this URL to another A2A client. Use the LAN or Tailscale address when they are not on this machine.",
+      "statusEnabled": "Inbound on",
+      "statusDisabled": "Inbound off",
+      "localAgentCardUrlLabel": "Local Agent Card URL",
+      "lanAgentCardUrlLabel": "LAN Agent Card URL",
+      "localA2AUrlLabel": "Local A2A endpoint",
+      "copyAgentCardUrl": "Copy Agent Card URL",
+      "copyLanAgentCardUrl": "Copy LAN Agent Card URL",
+      "copyA2AUrl": "Copy A2A endpoint",
+      "lanHintFallback": "Use the LAN address when another device is on the same Wi-Fi or wired network.",
+      "tailscaleHint": "For Tailscale, use your MagicDNS/Serve/Funnel URL and keep /.well-known/agent-card.json plus /a2a reachable.",
+      "accessKeysTitle": "Access keys",
+      "accessKeysDescription": "Generated keys are shown in full only once. Existing keys stay masked.",
+      "newKeyLabel": "New access key label",
+      "newKeyPlaceholder": "teammate-laptop",
+      "generateKey": "Generate key",
+      "newKeyReadyTitle": "Copy this header now",
+      "newKeyReadyDescription": "The raw key will not be shown again after this panel is dismissed or refreshed.",
+      "dismissKey": "Dismiss",
+      "copyHeader": "Copy Authorization header",
+      "revokeKey": "Revoke",
+      "noKeys": "No access keys yet. Generate one before sharing a private endpoint.",
+      "toasts": {
+        "saved": "Inbound settings saved",
+        "saveFailed": "Failed to save inbound settings",
+        "keyGenerated": "Access key generated",
+        "keyGenerateFailed": "Failed to generate access key",
+        "keyRevoked": "Access key revoked",
+        "keyRevokeFailed": "Failed to revoke access key",
+        "copied": "Copied",
+        "copyFailed": "Copy failed"
+      }
+    },
+    "list": {
+      "title": "Configured instances",
+      "summaryTitle_one": "{{count}} configured instance",
+      "summaryTitle_other": "{{count}} configured instances",
+      "summaryDescription": "Select an instance to review its Agent Card, connection status, and auth settings.",
+      "refresh": "Refresh list",
+      "loading": "Loading remote instances...",
+      "empty": "No remote instances yet. Add an Agent Card URL above to create the first one.",
+      "unnamed": "Unnamed remote instance",
+      "statusConnected": "Connected",
+      "statusNeedsAttention": "Needs attention",
+      "statusNotChecked": "Not checked",
+      "capabilityCount_one": "{{count}} capability",
+      "capabilityCount_other": "{{count}} capabilities",
+      "test": "Test",
+      "refreshCard": "Refresh Agent Card"
+    },
+    "details": {
+      "title": "Instance details",
+      "empty": "Select a remote instance to edit auth, inspect its Agent Card, and run diagnostics.",
+      "noDescription": "No Agent Card summary is available yet.",
+      "displayNameLabel": "Display name",
+      "agentCardUrlLabel": "Agent Card URL",
+      "authModeLabel": "Authentication mode",
+      "bearerTokenLabel": "Bearer token",
+      "bearerTokenPlaceholder": "Paste token only if the remote endpoint requires it",
+      "authHint": "Choose an auth mode to edit bearer tokens or custom headers for this instance.",
+      "headersLabel": "Custom headers",
+      "headersPlaceholder": "Authorization: Bearer ...\nX-Workspace-Id: demo",
+      "save": "Save changes",
+      "test": "Run connection test",
+      "refreshCard": "Refresh Agent Card",
+      "delete": "Delete",
+      "connectionTitle": "Connection status",
+      "connectionEmpty": "No connection test has been run yet for this instance.",
+      "lastChecked": "Last checked {{checkedAt}}",
+      "metadataTitle": "Metadata",
+      "metadataCreated": "Created",
+      "metadataUpdated": "Updated",
+      "agentCardTitle": "Agent Card summary",
+      "capabilitiesEmpty": "No capabilities have been published yet.",
+      "inputModes": "Input modes",
+      "outputModes": "Output modes",
+      "modesEmpty": "Not declared",
+      "skills": "Advertised skills",
+      "skillsEmpty": "No skills advertised"
+    },
+    "authModes": {
+      "none": "No auth",
+      "bearer": "Bearer token",
+      "headers": "Custom headers",
+      "mixed": "Token + headers"
+    },
+    "deleteDialog": {
+      "title": "Delete remote instance",
+      "message": "Remove \"{{name}}\" from this workspace? This only deletes the local KTClaw configuration.",
+      "confirm": "Delete instance",
+      "cancel": "Cancel"
+    },
+    "toasts": {
+      "created": "Remote instance added",
+      "createFailed": "Failed to add remote instance",
+      "saved": "Remote instance updated",
+      "saveFailed": "Failed to save remote instance",
+      "refreshed": "Agent Card refreshed",
+      "refreshFailed": "Failed to refresh Agent Card",
+      "testPassed": "Connection test succeeded",
+      "testCompleted": "Connection test completed",
+      "testFailed": "Failed to run connection test",
+      "deleted": "Remote instance deleted",
+      "deleteFailed": "Failed to delete remote instance"
     }
   },
   "memoryKnowledge": {

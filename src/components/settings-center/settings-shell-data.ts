@@ -4,6 +4,7 @@ export type SettingsSectionId =
   | 'costs-usage'
   | 'models-providers'
   | 'general'
+  | 'remote-instances'
   | 'skills-mcp'
   | 'tool-permissions'
   | 'memory-knowledge'
@@ -27,6 +28,7 @@ export const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
   'costs-usage',
   'models-providers',
   'general',
+  'remote-instances',
   'skills-mcp',
   'tool-permissions',
   'memory-knowledge',
@@ -75,6 +77,11 @@ export const SETTINGS_SECTION_META: Record<
     titleKey: 'settings:settingsShell.meta.general.title',
     subtitleKey: 'settings:settingsShell.meta.general.subtitle',
     kickerKey: 'settings:settingsShell.meta.general.kicker',
+  },
+  'remote-instances': {
+    titleKey: 'settings:settingsShell.meta.remote-instances.title',
+    subtitleKey: 'settings:settingsShell.meta.remote-instances.subtitle',
+    kickerKey: 'settings:settingsShell.meta.remote-instances.kicker',
   },
   'skills-mcp': {
     titleKey: 'settings:settingsShell.meta.skills-mcp.title',

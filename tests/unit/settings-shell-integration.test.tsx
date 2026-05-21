@@ -131,6 +131,42 @@ describe('Settings shell integration', () => {
           ],
         };
       }
+      if (path === '/api/remote-instances') {
+        return { instances: [] };
+      }
+      if (path === '/api/remote-instances/self') {
+        return {
+          self: {
+            enabled: false,
+            gateway: { state: 'running', port: 18789 },
+            inbound: {
+              agentCard: {},
+              allowUnauthenticated: false,
+              apiKeys: [],
+            },
+            urls: {
+              localAgentCardUrl: 'http://127.0.0.1:18789/.well-known/agent-card.json',
+              localA2AEndpointUrl: 'http://127.0.0.1:18789/a2a',
+              lanAgentCardUrl: null,
+              lanA2AEndpointUrl: null,
+              tailscaleAgentCardUrlHint: 'https://<your-tailnet-host>/.well-known/agent-card.json',
+              tailscaleA2AEndpointUrlHint: 'https://<your-tailnet-host>/a2a',
+            },
+            share: {
+              url: 'http://127.0.0.1:18789/.well-known/agent-card.json',
+              headerName: 'Authorization',
+              headerValueExample: 'Bearer <access-key>',
+              headerLineExample: 'Authorization: Bearer <access-key>',
+            },
+            newAccessKey: null,
+            hints: {
+              lan: null,
+              tailscale: null,
+            },
+            reloadRequested: false,
+          },
+        };
+      }
       if (path === '/api/usage/recent-token-history?limit=200') {
         return [
           {
@@ -187,6 +223,7 @@ describe('Settings shell integration', () => {
     ['general', async () => expect(await screen.findByLabelText('工作台名称')).toBeInTheDocument()],
     ['skills-mcp', async () => expect(await screen.findByText('全局 Skills 与 MCP 中心')).toBeInTheDocument()],
     ['tool-permissions', async () => expect(await screen.findByText('工具权限')).toBeInTheDocument()],
+    ['remote-instances', async () => expect(await screen.findByLabelText('remoteInstances.add.agentCardUrlLabel')).toBeInTheDocument()],
     ['memory-knowledge', async () => expect(await screen.findByRole('tab', { name: 'memoryKnowledge.tabs.strategy' })).toBeInTheDocument()],
     ['migration-backup', async () => expect(await screen.findByRole('button', { name: '立即创建备份' })).toBeInTheDocument()],
     ['app-updates', async () => expect(await screen.findByRole('combobox', { name: '更新渠道' })).toBeInTheDocument()],

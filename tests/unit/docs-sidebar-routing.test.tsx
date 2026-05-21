@@ -127,4 +127,19 @@ describe('docs/help wiring', () => {
     expect(source).not.toContain("'docs-help'");
     expect(source).not.toContain('Docs / Help');
   });
+
+  it('renders the Remote instances first-level workspace entry', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: 'common:sidebar.remoteInstances' })).toBeInTheDocument();
+  });
+
+  it('registers a standalone /remote-instances route in App', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+    expect(source).toContain('path="remote-instances"');
+  });
 });

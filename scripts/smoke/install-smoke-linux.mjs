@@ -59,6 +59,9 @@ const requiredContentPatterns = [
   /resources\/preinstalled-skills\/\.preinstalled-lock\.json/,
   /resources\/openclaw\/package\.json/,
   /resources\/openclaw-plugins\/[^/]+\/openclaw\.plugin\.json/,
+  /resources\/openclaw-plugins\/a2a\/openclaw\.plugin\.json/,
+  /resources\/openclaw-plugins\/a2a\/node_modules\/@a2anet\/a2a-utils\/package\.json/,
+  /resources\/openclaw-plugins\/a2a\/node_modules\/@a2anet\/a2a-utils\/dist\/index\.js/,
 ];
 
 for (const pattern of requiredContentPatterns) {

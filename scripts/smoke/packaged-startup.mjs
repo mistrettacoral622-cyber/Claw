@@ -87,6 +87,29 @@ function findExecutable(platform, releaseRoot) {
   return target;
 }
 
+function resolveResourcesDir(platform, executable) {
+  if (platform === 'mac') {
+    return path.join(path.dirname(path.dirname(executable)), 'Resources');
+  }
+
+  return path.join(path.dirname(executable), 'resources');
+}
+
+function assertPackagedA2AResources(resourcesDir) {
+  const required = [
+    'openclaw-plugins/a2a/openclaw.plugin.json',
+    'openclaw-plugins/a2a/node_modules/@a2anet/a2a-utils/package.json',
+    'openclaw-plugins/a2a/node_modules/@a2anet/a2a-utils/dist/index.js',
+  ];
+
+  for (const rel of required) {
+    const fullPath = path.join(resourcesDir, ...rel.split('/'));
+    if (!existsSync(fullPath)) {
+      fail(`packaged A2A runtime resource missing: ${fullPath}`);
+    }
+  }
+}
+
 function getLaunchArgs(platform) {
   if (platform !== 'linux') {
     return [];
@@ -101,6 +124,7 @@ function getLaunchArgs(platform) {
 async function main() {
   const platform = normalizePlatform(platformArg || process.platform);
   const executable = findExecutable(platform, releaseDir);
+  assertPackagedA2AResources(resolveResourcesDir(platform, executable));
   const launchArgs = getLaunchArgs(platform);
   const child = spawn(executable, launchArgs, {
     cwd: path.dirname(executable),

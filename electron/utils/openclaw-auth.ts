@@ -11,6 +11,7 @@
 import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { constants } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'node:crypto';
 import { listConfiguredAgentIds } from './agent-config';
 import {
   getProviderEnvVar,
@@ -474,6 +475,66 @@ interface RuntimeProviderConfigOverride {
   authHeader?: boolean;
 }
 
+type A2APluginOutboundAgentEntry = {
+  url: string;
+  custom_headers?: Record<string, string>;
+};
+
+type A2APluginOutboundConfig = {
+  agents: Record<string, A2APluginOutboundAgentEntry>;
+};
+
+export type A2AInboundAgentCardSkill = {
+  id: string;
+  name: string;
+  description: string;
+  tags?: string[];
+  examples?: string[];
+  inputModes?: string[];
+  outputModes?: string[];
+};
+
+export type A2AInboundAgentCardConfig = {
+  name?: string;
+  description?: string;
+  skills?: A2AInboundAgentCardSkill[];
+};
+
+export type A2AInboundApiKeyConfig = {
+  label: string;
+  key: string;
+};
+
+export type A2APluginInboundConfig = {
+  agentCard?: A2AInboundAgentCardConfig;
+  allowUnauthenticated?: boolean;
+  apiKeys?: A2AInboundApiKeyConfig[];
+};
+
+export type A2APluginConfigSnapshot = {
+  enabled: boolean;
+  inbound: A2APluginInboundConfig;
+  outbound: A2APluginOutboundConfig;
+};
+
+export type A2AInboundConfigPatch = {
+  enabled?: boolean;
+  agentCard?: A2AInboundAgentCardConfig;
+  allowUnauthenticated?: boolean;
+};
+
+export type OpenClawGatewayBindMode = 'loopback' | 'lan' | 'tailnet' | 'auto' | 'custom';
+
+export type OpenClawGatewayExposureConfigSnapshot = {
+  bindMode: OpenClawGatewayBindMode;
+  customBindHost?: string;
+  tailscaleMode: 'off' | 'serve' | 'funnel' | string;
+};
+
+export type OpenClawGatewayExposureConfigPatch = {
+  bindMode?: OpenClawGatewayBindMode;
+};
+
 type ProviderEntryBuildOptions = {
   baseUrl: string;
   api: string;
@@ -499,6 +560,384 @@ function extractFallbackModelIds(provider: string, fallbackModels: string[]): st
   return fallbackModels
     .filter((fallback) => fallback.startsWith(`${provider}/`))
     .map((fallback) => fallback.slice(provider.length + 1));
+}
+
+function ensurePluginEnabled(
+  config: Record<string, unknown>,
+  pluginId: string,
+): Record<string, unknown> {
+  const plugins = (config.plugins || {}) as Record<string, unknown>;
+  const allow = Array.isArray(plugins.allow) ? [...plugins.allow as string[]] : [];
+  const pEntries = (
+    plugins.entries && typeof plugins.entries === 'object'
+      ? { ...(plugins.entries as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+
+  if (!allow.includes(pluginId)) {
+    allow.push(pluginId);
+  }
+
+  const currentEntry = (pEntries[pluginId] && typeof pEntries[pluginId] === 'object')
+    ? { ...(pEntries[pluginId] as Record<string, unknown>) }
+    : {};
+  currentEntry.enabled = true;
+  pEntries[pluginId] = currentEntry;
+
+  plugins.allow = allow;
+  plugins.entries = pEntries;
+  config.plugins = plugins;
+  return currentEntry;
+}
+
+function readPluginEntry(
+  config: Record<string, unknown>,
+  pluginId: string,
+): Record<string, unknown> | null {
+  const plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
+    ? config.plugins as Record<string, unknown>
+    : null;
+  const entries = plugins?.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
+    ? plugins.entries as Record<string, unknown>
+    : null;
+  const entry = entries?.[pluginId];
+  return entry && typeof entry === 'object' && !Array.isArray(entry)
+    ? entry as Record<string, unknown>
+    : null;
+}
+
+function setPluginEnabled(
+  config: Record<string, unknown>,
+  pluginId: string,
+  enabled: boolean,
+): Record<string, unknown> {
+  if (enabled) {
+    return ensurePluginEnabled(config, pluginId);
+  }
+
+  const plugins = (
+    config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
+      ? { ...(config.plugins as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+  const allow = Array.isArray(plugins.allow)
+    ? (plugins.allow as unknown[]).filter((value): value is string => typeof value === 'string' && value !== pluginId)
+    : [];
+  const entries = (
+    plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
+      ? { ...(plugins.entries as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+  const currentEntry = entries[pluginId] && typeof entries[pluginId] === 'object' && !Array.isArray(entries[pluginId])
+    ? { ...(entries[pluginId] as Record<string, unknown>) }
+    : {};
+
+  currentEntry.enabled = false;
+  entries[pluginId] = currentEntry;
+  plugins.allow = allow;
+  plugins.entries = entries;
+  config.plugins = plugins;
+  return currentEntry;
+}
+
+function normalizeOptionalConfigString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeConfigStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const items = value
+    .map((entry) => normalizeOptionalConfigString(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeA2AInboundSkill(value: unknown): A2AInboundAgentCardSkill | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const id = normalizeOptionalConfigString(raw.id);
+  const name = normalizeOptionalConfigString(raw.name);
+  const description = normalizeOptionalConfigString(raw.description);
+  if (!id || !name || !description) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    description,
+    ...(normalizeConfigStringArray(raw.tags) ? { tags: normalizeConfigStringArray(raw.tags) } : {}),
+    ...(normalizeConfigStringArray(raw.examples) ? { examples: normalizeConfigStringArray(raw.examples) } : {}),
+    ...(normalizeConfigStringArray(raw.inputModes) ? { inputModes: normalizeConfigStringArray(raw.inputModes) } : {}),
+    ...(normalizeConfigStringArray(raw.outputModes) ? { outputModes: normalizeConfigStringArray(raw.outputModes) } : {}),
+  };
+}
+
+function normalizeA2AInboundAgentCard(value: unknown): A2AInboundAgentCardConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const skills = Array.isArray(raw.skills)
+    ? raw.skills.map(normalizeA2AInboundSkill).filter((entry): entry is A2AInboundAgentCardSkill => entry !== null)
+    : undefined;
+  const card: A2AInboundAgentCardConfig = {
+    ...(normalizeOptionalConfigString(raw.name) ? { name: normalizeOptionalConfigString(raw.name) } : {}),
+    ...(normalizeOptionalConfigString(raw.description) ? { description: normalizeOptionalConfigString(raw.description) } : {}),
+    ...(skills && skills.length > 0 ? { skills } : {}),
+  };
+
+  return Object.keys(card).length > 0 ? card : undefined;
+}
+
+function normalizeA2AInboundApiKey(value: unknown): A2AInboundApiKeyConfig | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const label = normalizeOptionalConfigString(raw.label);
+  const key = normalizeOptionalConfigString(raw.key);
+  return label && key ? { label, key } : null;
+}
+
+function normalizeA2AInboundConfig(value: unknown): A2APluginInboundConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const raw = value as Record<string, unknown>;
+  const agentCard = normalizeA2AInboundAgentCard(raw.agentCard);
+  const apiKeys = Array.isArray(raw.apiKeys)
+    ? raw.apiKeys.map(normalizeA2AInboundApiKey).filter((entry): entry is A2AInboundApiKeyConfig => entry !== null)
+    : undefined;
+
+  return {
+    ...(agentCard ? { agentCard } : {}),
+    ...(typeof raw.allowUnauthenticated === 'boolean' ? { allowUnauthenticated: raw.allowUnauthenticated } : {}),
+    ...(apiKeys && apiKeys.length > 0 ? { apiKeys } : {}),
+  };
+}
+
+function normalizeA2AOutboundConfig(value: unknown): A2APluginOutboundConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { agents: {} };
+  }
+
+  const raw = value as Record<string, unknown>;
+  const rawAgents = raw.agents && typeof raw.agents === 'object' && !Array.isArray(raw.agents)
+    ? raw.agents as Record<string, unknown>
+    : {};
+  const agents: Record<string, A2APluginOutboundAgentEntry> = {};
+
+  for (const [agentId, rawAgent] of Object.entries(rawAgents)) {
+    if (!rawAgent || typeof rawAgent !== 'object' || Array.isArray(rawAgent)) {
+      continue;
+    }
+
+    const rawEntry = rawAgent as Record<string, unknown>;
+    const url = normalizeOptionalConfigString(rawEntry.url);
+    if (!url) {
+      continue;
+    }
+
+    const customHeaders = rawEntry.custom_headers && typeof rawEntry.custom_headers === 'object' && !Array.isArray(rawEntry.custom_headers)
+      ? Object.fromEntries(
+        Object.entries(rawEntry.custom_headers as Record<string, unknown>)
+          .map(([key, value]) => [key.trim(), normalizeOptionalConfigString(value)])
+          .filter((entry): entry is [string, string] => Boolean(entry[0] && entry[1])),
+      )
+      : undefined;
+
+    agents[agentId] = {
+      url,
+      ...(customHeaders && Object.keys(customHeaders).length > 0 ? { custom_headers: customHeaders } : {}),
+    };
+  }
+
+  return { agents };
+}
+
+function readA2APluginConfigFromEntry(entry: Record<string, unknown> | null): A2APluginConfigSnapshot {
+  const pluginConfig = entry?.config && typeof entry.config === 'object' && !Array.isArray(entry.config)
+    ? entry.config as Record<string, unknown>
+    : {};
+
+  return {
+    enabled: entry?.enabled === true,
+    inbound: normalizeA2AInboundConfig(pluginConfig.inbound),
+    outbound: normalizeA2AOutboundConfig(pluginConfig.outbound),
+  };
+}
+
+function mergeA2AInboundConfig(
+  current: A2APluginInboundConfig,
+  patch: A2AInboundConfigPatch,
+): A2APluginInboundConfig {
+  const next: A2APluginInboundConfig = {
+    ...current,
+    ...(current.agentCard ? { agentCard: { ...current.agentCard } } : {}),
+    ...(current.apiKeys ? { apiKeys: [...current.apiKeys] } : {}),
+  };
+
+  if (patch.agentCard) {
+    const nextCard: A2AInboundAgentCardConfig = {
+      ...(next.agentCard ?? {}),
+    };
+    if (patch.agentCard.name !== undefined) {
+      const name = normalizeOptionalConfigString(patch.agentCard.name);
+      if (name) {
+        nextCard.name = name;
+      } else {
+        delete nextCard.name;
+      }
+    }
+    if (patch.agentCard.description !== undefined) {
+      const description = normalizeOptionalConfigString(patch.agentCard.description);
+      if (description) {
+        nextCard.description = description;
+      } else {
+        delete nextCard.description;
+      }
+    }
+    if (patch.agentCard.skills !== undefined) {
+      const skills = patch.agentCard.skills
+        .map(normalizeA2AInboundSkill)
+        .filter((entry): entry is A2AInboundAgentCardSkill => entry !== null);
+      if (skills.length > 0) {
+        nextCard.skills = skills;
+      } else {
+        delete nextCard.skills;
+      }
+    }
+    if (Object.keys(nextCard).length > 0) {
+      next.agentCard = nextCard;
+    } else {
+      delete next.agentCard;
+    }
+  }
+
+  if (patch.allowUnauthenticated !== undefined) {
+    next.allowUnauthenticated = Boolean(patch.allowUnauthenticated);
+  }
+
+  return next;
+}
+
+function generateA2AInboundAccessKey(): string {
+  return `ktclaw_a2a_${randomBytes(32).toString('base64url')}`;
+}
+
+function normalizeA2AInboundKeyLabel(value: unknown): string {
+  const label = normalizeOptionalConfigString(value);
+  if (!label) {
+    throw new Error('label is required');
+  }
+  if (label.length > 80) {
+    throw new Error('label must be 80 characters or fewer');
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._ -]*$/.test(label)) {
+    throw new Error('label may contain letters, numbers, spaces, dots, underscores, and hyphens');
+  }
+  return label;
+}
+
+const OPENCLAW_GATEWAY_BIND_MODES: OpenClawGatewayBindMode[] = [
+  'loopback',
+  'lan',
+  'tailnet',
+  'auto',
+  'custom',
+];
+
+function normalizeGatewayBindMode(value: unknown): OpenClawGatewayBindMode {
+  const normalized = normalizeOptionalConfigString(value)?.toLowerCase();
+  if (OPENCLAW_GATEWAY_BIND_MODES.includes(normalized as OpenClawGatewayBindMode)) {
+    return normalized as OpenClawGatewayBindMode;
+  }
+
+  if (normalized === '0.0.0.0' || normalized === '::' || normalized === '[::]' || normalized === '*') {
+    return 'lan';
+  }
+
+  if (
+    normalized === '127.0.0.1'
+    || normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '[::1]'
+  ) {
+    return 'loopback';
+  }
+
+  return 'loopback';
+}
+
+function normalizeGatewayTailscaleMode(value: unknown): 'off' | 'serve' | 'funnel' | string {
+  const normalized = normalizeOptionalConfigString(value)?.toLowerCase();
+  return normalized ?? 'off';
+}
+
+function readGatewayExposureConfig(config: Record<string, unknown>): OpenClawGatewayExposureConfigSnapshot {
+  const gateway = config.gateway && typeof config.gateway === 'object' && !Array.isArray(config.gateway)
+    ? config.gateway as Record<string, unknown>
+    : {};
+  const tailscale = gateway.tailscale && typeof gateway.tailscale === 'object' && !Array.isArray(gateway.tailscale)
+    ? gateway.tailscale as Record<string, unknown>
+    : {};
+
+  return {
+    bindMode: normalizeGatewayBindMode(gateway.bind),
+    ...(normalizeOptionalConfigString(gateway.customBindHost) ? { customBindHost: normalizeOptionalConfigString(gateway.customBindHost) } : {}),
+    tailscaleMode: normalizeGatewayTailscaleMode(tailscale.mode),
+  };
+}
+
+function assertGatewayBindCompatibleWithTailscale(
+  bindMode: OpenClawGatewayBindMode,
+  tailscaleMode: string,
+): void {
+  if ((tailscaleMode === 'serve' || tailscaleMode === 'funnel') && bindMode !== 'loopback') {
+    throw new Error(`gateway.bind must remain loopback when gateway.tailscale.mode=${tailscaleMode}`);
+  }
+}
+
+function ensureA2AInboundToolAccess(config: Record<string, unknown>): void {
+  const tools = (
+    config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools)
+      ? { ...(config.tools as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+  tools.profile = 'full';
+  config.tools = tools;
+
+  const sandbox = (
+    config.sandbox && typeof config.sandbox === 'object' && !Array.isArray(config.sandbox)
+      ? { ...(config.sandbox as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+  const sandboxTools = (
+    sandbox.tools && typeof sandbox.tools === 'object' && !Array.isArray(sandbox.tools)
+      ? { ...(sandbox.tools as Record<string, unknown>) }
+      : {}
+  ) as Record<string, unknown>;
+  const alsoAllow = Array.isArray(sandboxTools.alsoAllow)
+    ? (sandboxTools.alsoAllow as unknown[]).filter((value): value is string => typeof value === 'string')
+    : [];
+
+  if (!alsoAllow.includes('a2a_update_agent_card')) {
+    alsoAllow.push('a2a_update_agent_card');
+  }
+
+  sandboxTools.alsoAllow = alsoAllow;
+  sandbox.tools = sandboxTools;
+  config.sandbox = sandbox;
 }
 
 function mergeProviderModels(
@@ -631,17 +1070,8 @@ export async function syncProviderConfigToOpenClaw(
 
     // Ensure extension is enabled for oauth providers to prevent gateway wiping config
     if (isOpenClawOAuthPluginProviderKey(provider)) {
-      const plugins = (config.plugins || {}) as Record<string, unknown>;
-      const allow = Array.isArray(plugins.allow) ? [...plugins.allow as string[]] : [];
-      const pEntries = (plugins.entries || {}) as Record<string, unknown>;
       const pluginId = getOAuthPluginId(provider);
-      if (!allow.includes(pluginId)) {
-        allow.push(pluginId);
-      }
-      pEntries[pluginId] = { enabled: true };
-      plugins.allow = allow;
-      plugins.entries = pEntries;
-      config.plugins = plugins;
+      ensurePluginEnabled(config, pluginId);
     }
 
     await writeOpenClawJson(config);
@@ -696,17 +1126,8 @@ export async function setOpenClawDefaultModelWithOverride(
 
     // Ensure the extension plugin is marked as enabled in openclaw.json
     if (isOpenClawOAuthPluginProviderKey(provider)) {
-      const plugins = (config.plugins || {}) as Record<string, unknown>;
-      const allow = Array.isArray(plugins.allow) ? [...plugins.allow as string[]] : [];
-      const pEntries = (plugins.entries || {}) as Record<string, unknown>;
       const pluginId = getOAuthPluginId(provider);
-      if (!allow.includes(pluginId)) {
-        allow.push(pluginId);
-      }
-      pEntries[pluginId] = { enabled: true };
-      plugins.allow = allow;
-      plugins.entries = pEntries;
-      config.plugins = plugins;
+      ensurePluginEnabled(config, pluginId);
     }
 
     await writeOpenClawJson(config);
@@ -826,6 +1247,191 @@ export async function syncBrowserConfigToOpenClaw(): Promise<void> {
     config.browser = browser;
     await writeOpenClawJson(config);
     logger.info('Synced browser config to openclaw.json');
+  });
+}
+
+export async function getA2APluginConfigFromOpenClaw(): Promise<A2APluginConfigSnapshot> {
+  const config = await readOpenClawJson();
+  return readA2APluginConfigFromEntry(readPluginEntry(config, 'a2a'));
+}
+
+export async function getGatewayExposureConfigFromOpenClaw(): Promise<OpenClawGatewayExposureConfigSnapshot> {
+  const config = await readOpenClawJson();
+  return readGatewayExposureConfig(config);
+}
+
+export async function updateGatewayExposureConfigInOpenClaw(
+  patch: OpenClawGatewayExposureConfigPatch,
+): Promise<OpenClawGatewayExposureConfigSnapshot> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    const current = readGatewayExposureConfig(config);
+    const nextBindMode = patch.bindMode ?? current.bindMode;
+
+    assertGatewayBindCompatibleWithTailscale(nextBindMode, current.tailscaleMode);
+
+    const gateway = (
+      config.gateway && typeof config.gateway === 'object' && !Array.isArray(config.gateway)
+        ? { ...(config.gateway as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    gateway.bind = nextBindMode;
+    if (!gateway.mode) gateway.mode = 'local';
+    config.gateway = gateway;
+
+    await writeOpenClawJson(config);
+    logger.info(`Updated OpenClaw gateway bind mode to "${nextBindMode}"`);
+    return readGatewayExposureConfig(config);
+  });
+}
+
+export async function updateA2AInboundConfigInOpenClaw(
+  patch: A2AInboundConfigPatch,
+): Promise<A2APluginConfigSnapshot> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    const currentEntry = readPluginEntry(config, 'a2a');
+    const entry = patch.enabled === false
+      ? setPluginEnabled(config, 'a2a', false)
+      : ensurePluginEnabled(config, 'a2a');
+    const existingConfig = (
+      entry.config && typeof entry.config === 'object' && !Array.isArray(entry.config)
+        ? { ...(entry.config as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    const current = readA2APluginConfigFromEntry({
+      ...(currentEntry ?? {}),
+      config: existingConfig,
+      enabled: patch.enabled === undefined ? entry.enabled : patch.enabled,
+    });
+
+    existingConfig.inbound = mergeA2AInboundConfig(current.inbound, patch);
+    entry.config = existingConfig;
+
+    if (patch.enabled !== false) {
+      ensureA2AInboundToolAccess(config);
+    }
+
+    await writeOpenClawJson(config);
+    logger.info('Updated A2A inbound config in openclaw.json');
+    return readA2APluginConfigFromEntry(entry);
+  });
+}
+
+export async function generateA2AInboundApiKeyInOpenClaw(
+  rawLabel: string,
+): Promise<{ snapshot: A2APluginConfigSnapshot; apiKey: A2AInboundApiKeyConfig }> {
+  const label = normalizeA2AInboundKeyLabel(rawLabel);
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    const entry = ensurePluginEnabled(config, 'a2a');
+    const existingConfig = (
+      entry.config && typeof entry.config === 'object' && !Array.isArray(entry.config)
+        ? { ...(entry.config as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    const current = readA2APluginConfigFromEntry(entry);
+    const existingKeys = current.inbound.apiKeys ?? [];
+
+    if (existingKeys.some((key) => key.label.toLowerCase() === label.toLowerCase())) {
+      throw new Error(`A2A inbound key label already exists: ${label}`);
+    }
+
+    const apiKey = {
+      label,
+      key: generateA2AInboundAccessKey(),
+    };
+    const nextInbound: A2APluginInboundConfig = {
+      ...current.inbound,
+      apiKeys: [...existingKeys, apiKey],
+    };
+
+    existingConfig.inbound = nextInbound;
+    entry.config = existingConfig;
+    ensureA2AInboundToolAccess(config);
+
+    await writeOpenClawJson(config);
+    logger.info(`Generated A2A inbound API key "${label}" in openclaw.json`);
+    return {
+      snapshot: readA2APluginConfigFromEntry(entry),
+      apiKey,
+    };
+  });
+}
+
+export async function revokeA2AInboundApiKeyInOpenClaw(
+  rawLabel: string,
+): Promise<{ snapshot: A2APluginConfigSnapshot; revoked: boolean }> {
+  const label = normalizeA2AInboundKeyLabel(rawLabel);
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    const currentEntry = readPluginEntry(config, 'a2a');
+    if (!currentEntry) {
+      return {
+        snapshot: readA2APluginConfigFromEntry(null),
+        revoked: false,
+      };
+    }
+
+    const entry = setPluginEnabled(config, 'a2a', currentEntry.enabled === true);
+    const existingConfig = (
+      entry.config && typeof entry.config === 'object' && !Array.isArray(entry.config)
+        ? { ...(entry.config as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    const current = readA2APluginConfigFromEntry(entry);
+    const existingKeys = current.inbound.apiKeys ?? [];
+    const nextKeys = existingKeys.filter((key) => key.label !== label);
+    const revoked = nextKeys.length !== existingKeys.length;
+    const nextInbound: A2APluginInboundConfig = {
+      ...current.inbound,
+    };
+
+    if (nextKeys.length > 0) {
+      nextInbound.apiKeys = nextKeys;
+    } else {
+      delete nextInbound.apiKeys;
+    }
+
+    existingConfig.inbound = nextInbound;
+    entry.config = existingConfig;
+
+    if (entry.enabled === true) {
+      ensureA2AInboundToolAccess(config);
+    }
+
+    await writeOpenClawJson(config);
+    logger.info(`Revoked A2A inbound API key "${label}" in openclaw.json: ${revoked}`);
+    return {
+      snapshot: readA2APluginConfigFromEntry(entry),
+      revoked,
+    };
+  });
+}
+
+export async function syncA2APluginConfigToOpenClaw(
+  outbound: A2APluginOutboundConfig,
+): Promise<void> {
+  return withConfigLock(async () => {
+    const config = await readOpenClawJson();
+    const a2aEntry = ensurePluginEnabled(config, 'a2a');
+    const existingConfig = (
+      a2aEntry.config && typeof a2aEntry.config === 'object'
+        ? { ...(a2aEntry.config as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    const existingOutbound = (
+      existingConfig.outbound && typeof existingConfig.outbound === 'object'
+        ? { ...(existingConfig.outbound as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+
+    existingOutbound.agents = outbound.agents;
+    existingConfig.outbound = existingOutbound;
+    a2aEntry.config = existingConfig;
+
+    await writeOpenClawJson(config);
+    logger.info(`Synced A2A plugin config to openclaw.json (${Object.keys(outbound.agents).length} agents)`);
   });
 }
 
@@ -1151,6 +1757,14 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
           logger.info(`[sanitize] Disabled plugins.entries.${pluginId} (channel "${channelType}" is not configured)`);
           modified = true;
         }
+      }
+
+      // Non-channel plugins such as A2A are managed separately. If the user has
+      // already enabled them in plugins.entries, preserve that intent here.
+      if (pEntries?.a2a && pEntries.a2a.enabled === false && Array.isArray(pluginsObj.allow) && pluginsObj.allow.includes('a2a')) {
+        pEntries.a2a.enabled = true;
+        logger.info('[sanitize] Re-enabled plugins.entries.a2a because plugins.allow includes "a2a"');
+        modified = true;
       }
     }
 

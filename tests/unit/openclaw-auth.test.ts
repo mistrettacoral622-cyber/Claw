@@ -174,6 +174,192 @@ describe('syncProviderConfigToOpenClaw', () => {
   });
 });
 
+describe('A2A inbound OpenClaw config helpers', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    await rm(testHome, { recursive: true, force: true });
+    await rm(testUserData, { recursive: true, force: true });
+  });
+
+  it('updates inbound config while preserving existing outbound A2A agents', async () => {
+    await writeOpenClawJson({
+      plugins: {
+        allow: ['a2a'],
+        entries: {
+          a2a: {
+            enabled: true,
+            config: {
+              outbound: {
+                agents: {
+                  remote: {
+                    url: 'https://remote.example/.well-known/agent-card.json',
+                    custom_headers: {
+                      Authorization: 'Bearer remote-key',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const { updateA2AInboundConfigInOpenClaw } = await import('@electron/utils/openclaw-auth');
+
+    await updateA2AInboundConfigInOpenClaw({
+      enabled: true,
+      agentCard: {
+        name: 'Shared KTClaw',
+        description: 'My local desktop agent',
+      },
+      allowUnauthenticated: false,
+    });
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as {
+      allow?: string[];
+      entries?: Record<string, {
+        enabled?: boolean;
+        config?: Record<string, unknown>;
+      }>;
+    };
+    const a2aConfig = plugins.entries?.a2a?.config as {
+      inbound?: Record<string, unknown>;
+      outbound?: Record<string, unknown>;
+    };
+
+    expect(plugins.allow).toContain('a2a');
+    expect(plugins.entries?.a2a?.enabled).toBe(true);
+    expect(a2aConfig.inbound).toEqual({
+      agentCard: {
+        name: 'Shared KTClaw',
+        description: 'My local desktop agent',
+      },
+      allowUnauthenticated: false,
+    });
+    expect(a2aConfig.outbound).toEqual({
+      agents: {
+        remote: {
+          url: 'https://remote.example/.well-known/agent-card.json',
+          custom_headers: {
+            Authorization: 'Bearer remote-key',
+          },
+        },
+      },
+    });
+  });
+
+  it('generates and revokes inbound API keys without exposing unrelated config', async () => {
+    await writeOpenClawJson({});
+    const {
+      generateA2AInboundApiKeyInOpenClaw,
+      getA2APluginConfigFromOpenClaw,
+      revokeA2AInboundApiKeyInOpenClaw,
+    } = await import('@electron/utils/openclaw-auth');
+
+    const generated = await generateA2AInboundApiKeyInOpenClaw('teammate');
+
+    expect(generated.apiKey.label).toBe('teammate');
+    expect(generated.apiKey.key).toMatch(/^ktclaw_a2a_/);
+    expect(generated.snapshot.inbound.apiKeys).toEqual([
+      generated.apiKey,
+    ]);
+
+    const afterGenerate = await getA2APluginConfigFromOpenClaw();
+    expect(afterGenerate.enabled).toBe(true);
+    expect(afterGenerate.inbound.apiKeys).toEqual([
+      generated.apiKey,
+    ]);
+
+    const revoked = await revokeA2AInboundApiKeyInOpenClaw('teammate');
+    expect(revoked.revoked).toBe(true);
+    expect(revoked.snapshot.inbound.apiKeys).toBeUndefined();
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as {
+      entries?: Record<string, { config?: { inbound?: Record<string, unknown> } }>;
+    };
+    expect(plugins.entries?.a2a?.config?.inbound?.apiKeys).toBeUndefined();
+  });
+
+  it('disables inbound sharing without letting sanitize re-enable the A2A plugin', async () => {
+    await writeOpenClawJson({
+      plugins: {
+        allow: ['a2a'],
+        entries: {
+          a2a: {
+            enabled: true,
+            config: {
+              inbound: {
+                allowUnauthenticated: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const {
+      sanitizeOpenClawConfig,
+      updateA2AInboundConfigInOpenClaw,
+    } = await import('@electron/utils/openclaw-auth');
+
+    await updateA2AInboundConfigInOpenClaw({ enabled: false });
+    await sanitizeOpenClawConfig();
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as { allow?: string[]; entries?: Record<string, { enabled?: boolean }> };
+    expect(plugins.allow).not.toContain('a2a');
+    expect(plugins.entries?.a2a?.enabled).toBe(false);
+  });
+
+  it('updates gateway bind mode for local-only and LAN sharing', async () => {
+    await writeOpenClawJson({
+      gateway: {
+        mode: 'local',
+        bind: '127.0.0.1',
+      },
+    });
+
+    const {
+      getGatewayExposureConfigFromOpenClaw,
+      updateGatewayExposureConfigInOpenClaw,
+    } = await import('@electron/utils/openclaw-auth');
+
+    expect(await getGatewayExposureConfigFromOpenClaw()).toEqual({
+      bindMode: 'loopback',
+      tailscaleMode: 'off',
+    });
+
+    await updateGatewayExposureConfigInOpenClaw({ bindMode: 'lan' });
+    const afterLan = await readOpenClawJson();
+    expect((afterLan.gateway as Record<string, unknown>).bind).toBe('lan');
+
+    await updateGatewayExposureConfigInOpenClaw({ bindMode: 'loopback' });
+    const afterLoopback = await readOpenClawJson();
+    expect((afterLoopback.gateway as Record<string, unknown>).bind).toBe('loopback');
+  });
+
+  it('keeps Tailscale serve/funnel exposure on loopback', async () => {
+    await writeOpenClawJson({
+      gateway: {
+        bind: 'loopback',
+        tailscale: {
+          mode: 'serve',
+        },
+      },
+    });
+
+    const { updateGatewayExposureConfigInOpenClaw } = await import('@electron/utils/openclaw-auth');
+
+    await expect(updateGatewayExposureConfigInOpenClaw({ bindMode: 'lan' }))
+      .rejects
+      .toThrow('gateway.bind must remain loopback when gateway.tailscale.mode=serve');
+  });
+});
+
 describe('sanitizeOpenClawConfig', () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -242,5 +428,24 @@ describe('sanitizeOpenClawConfig', () => {
     expect(plugins.entries?.['openclaw-weixin']?.enabled).toBe(false);
     expect(plugins.entries?.qqbot?.enabled).toBe(false);
     expect(plugins.entries?.customPlugin?.enabled).toBe(true);
+  });
+
+  it('preserves an explicitly enabled a2a plugin entry', async () => {
+    await writeOpenClawJson({
+      plugins: {
+        allow: ['a2a'],
+        entries: {
+          a2a: { enabled: true },
+        },
+      },
+    });
+
+    const { sanitizeOpenClawConfig } = await import('@electron/utils/openclaw-auth');
+    await sanitizeOpenClawConfig();
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as { allow?: string[]; entries?: Record<string, { enabled?: boolean }> };
+    expect(plugins.allow).toContain('a2a');
+    expect(plugins.entries?.a2a?.enabled).toBe(true);
   });
 });

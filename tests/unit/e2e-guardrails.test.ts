@@ -41,9 +41,22 @@ describe('E2E / release smoke guardrails', () => {
     expect(viteConfig).toContain("'@xenova/transformers'");
   });
 
-  it('includes Linux release/install smoke scripts', () => {
+  it('includes packaged startup and Linux release/install smoke scripts', () => {
+    expect(existsSync(resolve(process.cwd(), 'scripts/smoke/packaged-startup.mjs'))).toBe(true);
     expect(existsSync(resolve(process.cwd(), 'scripts/smoke/release-smoke.mjs'))).toBe(true);
     expect(existsSync(resolve(process.cwd(), 'scripts/smoke/install-smoke-linux.mjs'))).toBe(true);
+  });
+
+  it('guards A2A plugin resources in packaged startup and release smoke checks', () => {
+    const startupSmoke = readFileSync(resolve(process.cwd(), 'scripts/smoke/packaged-startup.mjs'), 'utf8');
+    const releaseSmoke = readFileSync(resolve(process.cwd(), 'scripts/smoke/release-smoke.mjs'), 'utf8');
+    const installSmokeLinux = readFileSync(resolve(process.cwd(), 'scripts/smoke/install-smoke-linux.mjs'), 'utf8');
+
+    for (const content of [startupSmoke, releaseSmoke, installSmokeLinux]) {
+      expect(content).toMatch(/openclaw-plugins(?:\\\/|\/)a2a(?:\\\/|\/)openclaw\\?\.plugin\\?\.json/);
+      expect(content).toMatch(/@a2anet(?:\\\/|\/)a2a-utils/);
+      expect(content).toMatch(/dist(?:\\\/|\/)index\\?\.js/);
+    }
   });
 
   it('runs Playwright and Linux release/install smoke in the main CI workflow', () => {
@@ -59,10 +72,13 @@ describe('E2E / release smoke guardrails', () => {
     const packageWinManualWorkflow = readFileSync(resolve(process.cwd(), '.github/workflows/package-win-manual.yml'), 'utf8');
 
     expect(releaseWorkflow).toContain('pnpm run package:mac:ci');
+    expect(releaseWorkflow).toContain('pnpm run smoke:startup:packaged -- --platform=mac');
     expect(releaseWorkflow).toContain('pnpm run package:prepare');
     expect(releaseWorkflow).toContain('pnpm exec electron-builder --win --x64 --publish never');
     expect(releaseWorkflow).toContain('pnpm exec electron-builder --win --arm64 --publish never');
+    expect(releaseWorkflow).toContain('pnpm run smoke:startup:packaged -- --platform=win');
     expect(releaseWorkflow).toContain('pnpm run package:linux:ci');
+    expect(releaseWorkflow).toContain('pnpm run smoke:startup:packaged -- --platform=linux');
     expect(releaseWorkflow).toContain('pnpm run smoke:release:linux');
     expect(releaseWorkflow).toContain('pnpm run smoke:install:linux');
 

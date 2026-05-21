@@ -15,6 +15,7 @@ const nodeTestInclude = [
   'tests/unit/permissions-enforcer.test.ts',
   'tests/unit/session-*.test.ts',
   'tests/unit/openclaw-*.test.ts',
+  'tests/unit/remote-instances-a2a-runtime.test.ts',
   'tests/unit/preinstalled-skills-script.test.ts',
   'tests/unit/ralph-codex-*.test.ts',
   'tests/unit/team-rollup-summary.test.ts',
