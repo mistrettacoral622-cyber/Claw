@@ -1,6 +1,6 @@
 import { invokeIpc } from '@/lib/api-client';
 import { trackUiEvent } from './telemetry';
-import { normalizeAppError } from './error-model';
+import { AppError, normalizeAppError, type AppErrorCode } from './error-model';
 
 const HOST_API_PORT = 3210;
 const HOST_API_BASE = `http://127.0.0.1:${HOST_API_PORT}`;
@@ -56,6 +56,33 @@ function resolveProxyErrorMessage(error: HostApiProxyResponse['error']): string 
     : (error?.message || 'Host API proxy request failed');
 }
 
+function readJsonErrorMessage(json: unknown): string | null {
+  return typeof json === 'object' && json !== null && 'error' in json
+    ? String((json as Record<string, unknown>).error)
+    : null;
+}
+
+function classifyHttpStatus(status?: number): AppErrorCode {
+  if (status === 401) return 'AUTH_INVALID';
+  if (status === 403) return 'PERMISSION';
+  if (status === 429) return 'RATE_LIMIT';
+  if (typeof status === 'number' && status >= 500) return 'GATEWAY';
+  return 'UNKNOWN';
+}
+
+function createHostApiStatusError(params: {
+  status?: number;
+  json?: unknown;
+  text?: string;
+}): AppError {
+  const message = params.text || readJsonErrorMessage(params.json) || `HTTP ${params.status ?? 'unknown'}`;
+  return new AppError(classifyHttpStatus(params.status), message, undefined, {
+    status: params.status ?? null,
+    json: params.json,
+    text: params.text,
+  });
+}
+
 function parseUnifiedProxyResponse<T>(
   response: HostApiProxyResponse,
   path: string,
@@ -77,10 +104,11 @@ function parseUnifiedProxyResponse<T>(
 
   if (data.status === 204) return undefined as T;
   if (data.ok === false) {
-    const errorMsg = typeof data.json === 'object' && data.json !== null && 'error' in (data.json as Record<string, unknown>)
-      ? String((data.json as Record<string, unknown>).error)
-      : `HTTP ${data.status ?? 'unknown'}`;
-    throw new Error(errorMsg);
+    throw createHostApiStatusError({
+      status: data.status,
+      json: data.json,
+      text: data.text,
+    });
   }
   if (data.json !== undefined) return data.json as T;
   return data.text as T;
@@ -97,11 +125,11 @@ function parseLegacyProxyResponse<T>(
   }
 
   if (!response.ok) {
-    const message = response.text
-      || (typeof response.json === 'object' && response.json != null && 'error' in (response.json as Record<string, unknown>)
-        ? String((response.json as Record<string, unknown>).error)
-        : `HTTP ${response.status ?? 'unknown'}`);
-    throw new Error(message);
+    throw createHostApiStatusError({
+      status: response.status,
+      json: response.json,
+      text: response.text,
+    });
   }
 
   trackUiEvent('hostapi.fetch', {
@@ -201,9 +229,23 @@ async function runBrowserFetch<T>(
   try {
     const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-      return await response.json() as T;
+      const json = await response.json();
+      if (!response.ok) {
+        throw createHostApiStatusError({
+          status: response.status,
+          json,
+        });
+      }
+      return json as T;
     }
-    return await response.text() as T;
+    const text = await response.text();
+    if (!response.ok) {
+      throw createHostApiStatusError({
+        status: response.status,
+        text,
+      });
+    }
+    return text as T;
   } catch (error) {
     throw normalizeAppError(error, { source: mode.source, path, method });
   }

@@ -117,6 +117,7 @@ Channel-backed conversations are now isolated from the main local chat timeline,
 ### Remote Intercom
 Use **Settings -> Remote Instances** to configure the minimal SSH Intercom path for cross-machine agent control. A Windows KTClaw instance can save a Linux host, SSH user/port, target agent, session id, and remote OpenClaw command, then send a message that runs `openclaw agent --agent <id> --session-id intercom --message ...` on the Linux host.
 The same settings panel now shows this machine's own SSH Intercom values, including host, user, port, agent id, session id, and route example, so another KTClaw can copy them when adding this machine as a controllable instance. On Windows, KTClaw also regenerates `~/.openclaw/gateway.cmd` to run Gateway through the bundled Electron Node runtime, so the helper script does not depend on a separate system Node installation.
+After a send attempt, the Remote Instances console displays the command exit code, stdout, stderr, and duration so SSH or remote OpenClaw failures are visible without opening DevTools.
 A2A Agent Card routes remain in the backend for later work, but the current settings panel keeps that flow hidden so the first usable path is Windows-to-Linux SSH. NATS/JetStream is reserved for a later reliable-queue transport.
 
 ### ⏰ Cron-Based Automation

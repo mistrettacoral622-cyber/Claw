@@ -54,8 +54,14 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.previewLabel': 'Command preview',
         'remoteInstances.intercom.routeNeedsSave': 'Save route before sending',
         'remoteInstances.intercom.readyToSend': 'Ready to send through SSH',
+        'remoteInstances.intercom.deliveryResultTitle': 'Remote response',
+        'remoteInstances.intercom.deliveryFailedTitle': 'Delivery failed',
+        'remoteInstances.intercom.exitCodeLabel': 'Exit code',
+        'remoteInstances.intercom.durationLabel': 'Duration',
+        'remoteInstances.intercom.emptyOutput': '(empty)',
         'remoteInstances.intercom.send': 'Send',
         'remoteInstances.intercom.toasts.messageQueued': 'Message sent to Linux',
+        'remoteInstances.intercom.toasts.messageDelivered': `Message delivered (${options?.code ?? 0})`,
         'remoteInstances.intercom.toasts.messageFailed': 'Failed to send message',
       };
       return table[key] ?? key;
@@ -129,7 +135,7 @@ describe('RemoteInstances message flow', () => {
       if (path === '/api/intercom/send' && init?.method === 'POST') {
         return {
           success: true,
-          queued: true,
+          queued: false,
           target: 'linux-ktclaw',
           sender: 'dev',
           transport: 'ssh',
@@ -138,6 +144,10 @@ describe('RemoteInstances message flow', () => {
           sessionId: 'intercom',
           command: 'ssh',
           args: [],
+          exitCode: 0,
+          stdout: '{"ok":true}',
+          stderr: '',
+          durationMs: 123,
         };
       }
       throw new Error(`Unexpected host api call: ${path} ${init?.method ?? 'GET'}`);
@@ -168,6 +178,9 @@ describe('RemoteInstances message flow', () => {
         }),
       );
     });
+    expect(await screen.findByText('Remote response')).toBeInTheDocument();
+    expect(screen.getByText('{"ok":true}')).toBeInTheDocument();
+    expect(screen.getByText('Exit code: 0')).toBeInTheDocument();
     expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
   });
 });

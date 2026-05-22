@@ -64,9 +64,17 @@ export async function handleIntercomRoutes(
   if (url.pathname === '/api/intercom/send' && req.method === 'POST') {
     try {
       const body = await parseJsonBody<IntercomSendInput>(req);
-      sendJson(res, 202, await sendIntercomMessage(body));
+      sendJson(res, 200, await sendIntercomMessage(body));
     } catch (error) {
-      sendJson(res, 400, { success: false, error: error instanceof Error ? error.message : String(error) });
+      const row = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+      sendJson(res, 502, {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        exitCode: typeof row.exitCode === 'number' ? row.exitCode : null,
+        stdout: typeof row.stdout === 'string' ? row.stdout : '',
+        stderr: typeof row.stderr === 'string' ? row.stderr : '',
+        durationMs: typeof row.durationMs === 'number' ? row.durationMs : null,
+      });
     }
     return true;
   }

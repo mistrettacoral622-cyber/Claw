@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { AppError } from '@/lib/error-model';
 import { hostApiFetch } from '@/lib/host-api';
 
 export type IntercomTransport = 'local' | 'ssh' | 'nats';
@@ -48,6 +49,23 @@ export type IntercomSendInput = {
   sessionId?: string;
 };
 
+export type IntercomSendResult = {
+  success: boolean;
+  queued: boolean;
+  target: string;
+  sender: string;
+  transport: IntercomTransport;
+  host: string;
+  agent: string;
+  sessionId: string;
+  command: string;
+  args: string[];
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number | null;
+};
+
 export type IntercomProtocolInstallResult = {
   success: true;
   updated: string[];
@@ -65,10 +83,11 @@ type IntercomState = {
   sending: boolean;
   installingProtocol: boolean;
   error: string | null;
+  lastSendResult: IntercomSendResult | null;
   fetchIntercom: (options?: { force?: boolean }) => Promise<void>;
   upsertRoute: (input: IntercomRouteInput) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
-  sendMessage: (input: IntercomSendInput) => Promise<void>;
+  sendMessage: (input: IntercomSendInput) => Promise<IntercomSendResult>;
   installProtocol: () => Promise<IntercomProtocolInstallResult>;
   clearError: () => void;
 };
@@ -170,8 +189,42 @@ function normalizeProtocolInstallResult(value: unknown): IntercomProtocolInstall
   };
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(readString).filter((entry): entry is string => entry !== null)
+    : [];
+}
+
+function normalizeSendResult(value: unknown): IntercomSendResult {
+  const row = isRecord(value) ? value : {};
+  return {
+    success: row.success !== false,
+    queued: row.queued === true,
+    target: readString(row.target) ?? '',
+    sender: readString(row.sender) ?? '',
+    transport: readTransport(row.transport),
+    host: readString(row.host) ?? '',
+    agent: readString(row.agent) ?? '',
+    sessionId: readString(row.sessionId) ?? 'intercom',
+    command: readString(row.command) ?? '',
+    args: normalizeStringArray(row.args),
+    exitCode: typeof row.exitCode === 'number' ? row.exitCode : null,
+    stdout: readString(row.stdout) ?? '',
+    stderr: readString(row.stderr) ?? '',
+    durationMs: typeof row.durationMs === 'number' ? row.durationMs : null,
+  };
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readIntercomErrorPayload(error: unknown): unknown {
+  if (!(error instanceof AppError)) {
+    return null;
+  }
+  const json = error.details?.json;
+  return isRecord(json) && json.success === false ? json : null;
 }
 
 export const useIntercomStore = create<IntercomState>((set, get) => ({
@@ -185,6 +238,7 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   sending: false,
   installingProtocol: false,
   error: null,
+  lastSendResult: null,
 
   fetchIntercom: async (options) => {
     if (get().loading && !options?.force) {
@@ -230,15 +284,22 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   },
 
   sendMessage: async (input) => {
-    set({ sending: true, error: null });
+    set({ sending: true, error: null, lastSendResult: null });
     try {
-      await hostApiFetch('/api/intercom/send', {
+      const response = await hostApiFetch('/api/intercom/send', {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      set({ sending: false });
+      const result = normalizeSendResult(response);
+      set({ sending: false, lastSendResult: result });
+      return result;
     } catch (error) {
-      set({ sending: false, error: toErrorMessage(error) });
+      const failedResult = normalizeSendResult(readIntercomErrorPayload(error));
+      set({
+        sending: false,
+        error: toErrorMessage(error),
+        lastSendResult: failedResult.success === false ? failedResult : null,
+      });
       throw error;
     }
   },

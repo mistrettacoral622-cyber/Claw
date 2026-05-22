@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppError } from '@/lib/error-model';
 
 const invokeIpcMock = vi.fn();
 
@@ -73,6 +74,36 @@ describe('host-api', () => {
 
     const { hostApiFetch } = await import('@/lib/host-api');
     await expect(hostApiFetch('/api/test')).rejects.toThrow('Invalid Authentication');
+  });
+
+  it('preserves unified JSON error details for non-ok host responses', async () => {
+    invokeIpcMock.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        status: 502,
+        ok: false,
+        json: {
+          success: false,
+          error: 'Intercom command failed: ssh failed',
+          exitCode: 255,
+          stdout: '',
+          stderr: 'ssh failed',
+          durationMs: 42,
+        },
+      },
+    });
+
+    const { hostApiFetch } = await import('@/lib/host-api');
+    await expect(hostApiFetch('/api/intercom/send', { method: 'POST' })).rejects.toMatchObject({
+      message: 'Intercom command failed: ssh failed',
+      details: expect.objectContaining({
+        status: 502,
+        json: expect.objectContaining({
+          stderr: 'ssh failed',
+          exitCode: 255,
+        }),
+      }),
+    } satisfies Partial<AppError>);
   });
 
   it('does not fall back to browser fetch when IPC channel is unavailable in Electron mode', async () => {

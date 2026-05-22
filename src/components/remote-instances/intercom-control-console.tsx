@@ -69,6 +69,8 @@ export function IntercomControlConsole() {
   const saving = useIntercomStore((state) => state.saving);
   const sending = useIntercomStore((state) => state.sending);
   const installingProtocol = useIntercomStore((state) => state.installingProtocol);
+  const error = useIntercomStore((state) => state.error);
+  const lastSendResult = useIntercomStore((state) => state.lastSendResult);
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
   const upsertRoute = useIntercomStore((state) => state.upsertRoute);
   const sendMessage = useIntercomStore((state) => state.sendMessage);
@@ -166,14 +168,16 @@ export function IntercomControlConsole() {
     }
 
     try {
-      await sendMessage({
+      const result = await sendMessage({
         sender: messageDraft.sender.trim(),
         target: selectedRoute.id,
         message: messageDraft.message.trim(),
         sessionId: selectedRoute.sessionId || DEFAULT_INTERCOM_SESSION_ID,
       });
       setMessageDraft((current) => ({ ...current, message: '' }));
-      toast.success(t('remoteInstances.intercom.toasts.messageQueued'));
+      toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
+        code: result.exitCode ?? 0,
+      }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed'));
     }
@@ -383,6 +387,59 @@ export function IntercomControlConsole() {
                 {sshPreview}
               </p>
             </div>
+
+            {lastSendResult || error ? (
+              <div className={`mt-4 rounded-lg border px-3 py-3 ${
+                error
+                  ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20'
+                  : 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/20'
+              }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[12px] font-semibold text-[#0f172a] dark:text-foreground">
+                    {error ? <Server className="h-4 w-4 text-red-600" /> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                    {error ? t('remoteInstances.intercom.deliveryFailedTitle') : t('remoteInstances.intercom.deliveryResultTitle')}
+                  </div>
+                  {lastSendResult ? (
+                    <Badge variant={lastSendResult.exitCode === 0 ? 'success' : 'warning'}>
+                      {t('remoteInstances.intercom.exitCodeLabel')}: {lastSendResult.exitCode ?? '-'}
+                    </Badge>
+                  ) : null}
+                </div>
+
+                {error ? (
+                  <p className="mt-3 break-words font-mono text-[11px] leading-5 text-red-700 dark:text-red-200">
+                    {error}
+                  </p>
+                ) : null}
+
+                {lastSendResult ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid gap-2 text-[11px] text-[#64748b] dark:text-muted-foreground sm:grid-cols-3">
+                      <span>{t('remoteInstances.intercom.targetLabel')}: {lastSendResult.target}</span>
+                      <span>{t('remoteInstances.intercom.agentIdLabel')}: {lastSendResult.agent}</span>
+                      <span>{t('remoteInstances.intercom.durationLabel')}: {lastSendResult.durationMs ?? '-'}ms</span>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
+                        stdout
+                      </p>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-white px-3 py-2 font-mono text-[11px] leading-5 text-[#0f172a] dark:bg-background dark:text-foreground">
+                        {lastSendResult.stdout || t('remoteInstances.intercom.emptyOutput')}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
+                        stderr
+                      </p>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-white px-3 py-2 font-mono text-[11px] leading-5 text-[#0f172a] dark:bg-background dark:text-foreground">
+                        {lastSendResult.stderr || t('remoteInstances.intercom.emptyOutput')}
+                      </pre>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-black/[0.06] px-5 py-4 dark:border-white/10">

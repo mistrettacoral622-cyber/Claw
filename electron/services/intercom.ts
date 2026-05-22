@@ -65,7 +65,7 @@ export interface IntercomSendInput {
 
 export interface IntercomSendResult {
   success: true;
-  queued: true;
+  queued: false;
   target: string;
   sender: string;
   transport: IntercomTransport;
@@ -74,6 +74,10 @@ export interface IntercomSendResult {
   sessionId: string;
   command: string;
   args: string[];
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
 }
 
 interface StoredIntercomConfig extends Record<string, unknown> {
@@ -387,24 +391,52 @@ function buildSshCommand(route: IntercomRoute, message: string, sessionId: strin
   };
 }
 
-function spawnDetached(command: string, args: string[], options: {
+function runIntercomCommand(command: string, args: string[], options: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-}): void {
-  const child = spawn(command, args, {
-    cwd: options.cwd,
-    env: options.env,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.on('error', (error) => {
-    logger.warn('Failed to spawn intercom command', {
-      command,
-      error: String(error),
+}): Promise<{ exitCode: number | null; stdout: string; stderr: string; durationMs: number }> {
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      logger.warn('Failed to run intercom command', {
+        command,
+        error: String(error),
+      });
+      reject(error);
+    });
+    child.on('close', (exitCode) => {
+      const result = {
+        exitCode,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        durationMs: Date.now() - startedAt,
+      };
+      if (exitCode && exitCode !== 0) {
+        const details = result.stderr || result.stdout || `exit code ${exitCode}`;
+        const error = new Error(`Intercom command failed: ${details}`);
+        Object.assign(error, result);
+        reject(error);
+        return;
+      }
+      resolve(result);
     });
   });
-  child.unref();
 }
 
 function ensureIntercomConfig(config: IntercomConfigDocument): StoredIntercomConfig {
@@ -516,14 +548,14 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
   const invocation = route.transport === 'ssh'
     ? buildSshCommand(route, finalMessage, sessionId)
     : buildLocalCommand(route, finalMessage, sessionId);
-  spawnDetached(invocation.command, invocation.args, {
+  const commandResult = await runIntercomCommand(invocation.command, invocation.args, {
     cwd: invocation.cwd,
     env: invocation.env,
   });
 
   return {
     success: true,
-    queued: true,
+    queued: false,
     target,
     sender,
     transport: route.transport,
@@ -532,6 +564,10 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
     sessionId,
     command: invocation.command,
     args: invocation.args,
+    exitCode: commandResult.exitCode,
+    stdout: commandResult.stdout,
+    stderr: commandResult.stderr,
+    durationMs: commandResult.durationMs,
   };
 }
 

@@ -9,6 +9,48 @@ const { configStore, spawnMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
 }));
 
+function createProcessMock(options: {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+  error?: Error;
+} = {}) {
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const stdoutListeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const stderrListeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const onFor = (target: Map<string, Array<(...args: unknown[]) => void>>) => (
+    event: string,
+    handler: (...args: unknown[]) => void,
+  ) => {
+    target.set(event, [...(target.get(event) ?? []), handler]);
+  };
+  const emit = (target: Map<string, Array<(...args: unknown[]) => void>>, event: string, ...args: unknown[]) => {
+    for (const handler of target.get(event) ?? []) {
+      handler(...args);
+    }
+  };
+
+  setImmediate(() => {
+    if (options.error) {
+      emit(listeners, 'error', options.error);
+      return;
+    }
+    if (options.stdout) {
+      emit(stdoutListeners, 'data', Buffer.from(options.stdout));
+    }
+    if (options.stderr) {
+      emit(stderrListeners, 'data', Buffer.from(options.stderr));
+    }
+    emit(listeners, 'close', options.exitCode ?? 0);
+  });
+
+  return {
+    stdout: { on: onFor(stdoutListeners) },
+    stderr: { on: onFor(stderrListeners) },
+    on: onFor(listeners),
+  };
+}
+
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
@@ -76,10 +118,7 @@ describe('intercom service', () => {
     vi.resetModules();
     configStore.current = {};
     spawnMock.mockReset();
-    spawnMock.mockReturnValue({
-      unref: vi.fn(),
-      on: vi.fn(),
-    });
+    spawnMock.mockReturnValue(createProcessMock({ stdout: '{"ok":true}\n' }));
   });
 
   it('lists local agents as local intercom routes by default', async () => {
@@ -152,7 +191,7 @@ describe('intercom service', () => {
     }));
   });
 
-  it('sends SSH intercom messages through a detached ssh command', async () => {
+  it('sends SSH intercom messages and captures remote output', async () => {
     configStore.current = {
       intercom: {
         agents: {
@@ -176,10 +215,13 @@ describe('intercom service', () => {
 
     expect(result).toEqual(expect.objectContaining({
       success: true,
+      queued: false,
       transport: 'ssh',
       host: 'srv-c',
       agent: 'ops',
       sessionId: 'intercom',
+      exitCode: 0,
+      stdout: '{"ok":true}',
     }));
     expect(spawnMock).toHaveBeenCalledWith(
       'ssh',
@@ -190,13 +232,40 @@ describe('intercom service', () => {
         expect.stringContaining("openclaw 'agent' '--agent' 'ops' '--session-id' 'intercom' '--message'"),
       ],
       expect.objectContaining({
-        detached: true,
-        stdio: 'ignore',
+        detached: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       }),
     );
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs[3]).toContain('[from agent dev] 更新头像');
+  });
+
+  it('rejects SSH intercom messages when the remote command exits non-zero', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({ stderr: 'ssh: Could not resolve hostname sunyb9-pc', exitCode: 255 }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'sunyb9-pc',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await expect(sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    })).rejects.toMatchObject({
+      message: expect.stringContaining('Could not resolve hostname'),
+      exitCode: 255,
+      stderr: 'ssh: Could not resolve hostname sunyb9-pc',
+    });
   });
 
   it('sends local intercom messages with the bundled OpenClaw entry', async () => {

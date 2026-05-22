@@ -75,8 +75,11 @@ describe('intercom routes', () => {
     parseJsonBodyMock.mockResolvedValue({ target: 'ops', sender: 'dev', message: 'ping' });
     sendIntercomMessageMock.mockResolvedValue({
       success: true,
-      queued: true,
+      queued: false,
       target: 'ops',
+      stdout: '{"ok":true}',
+      stderr: '',
+      exitCode: 0,
     });
     const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
 
@@ -89,10 +92,43 @@ describe('intercom routes', () => {
 
     expect(handled).toBe(true);
     expect(sendIntercomMessageMock).toHaveBeenCalledWith({ target: 'ops', sender: 'dev', message: 'ping' });
-    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 202, {
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
       success: true,
-      queued: true,
+      queued: false,
       target: 'ops',
+      stdout: '{"ok":true}',
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  it('returns captured intercom command failures', async () => {
+    parseJsonBodyMock.mockResolvedValue({ target: 'ops', sender: 'dev', message: 'ping' });
+    const error = new Error('Intercom command failed: ssh failed');
+    Object.assign(error, {
+      exitCode: 255,
+      stdout: '',
+      stderr: 'ssh failed',
+      durationMs: 42,
+    });
+    sendIntercomMessageMock.mockRejectedValue(error);
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/send'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 502, {
+      success: false,
+      error: 'Intercom command failed: ssh failed',
+      exitCode: 255,
+      stdout: '',
+      stderr: 'ssh failed',
+      durationMs: 42,
     });
   });
 
