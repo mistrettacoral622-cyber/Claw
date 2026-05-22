@@ -119,6 +119,7 @@ Use **Settings -> Remote Instances** to configure the minimal SSH Intercom path 
 The same settings panel now shows this machine's own SSH Intercom values, including host, user, port, agent id, session id, and route example, so another KTClaw can copy them when adding this machine as a controllable instance. On Windows, KTClaw also regenerates `~/.openclaw/gateway.cmd` to run Gateway through the bundled Electron Node runtime, so the helper script does not depend on a separate system Node installation.
 After a send attempt, the Remote Instances console displays the command exit code, stdout, stderr, and duration so SSH or remote OpenClaw failures are visible without opening DevTools.
 SSH Intercom runs non-interactively: configure key-based SSH login first, because password prompts, host-key prompts, and remote commands that never exit are rejected with visible errors instead of hanging the UI.
+If key-based login is not available, save an optional SSH password on the route; KTClaw stores it in the local encrypted secret store and uses a built-in SSH client to execute the remote OpenClaw command.
 A2A Agent Card routes remain in the backend for later work, but the current settings panel keeps that flow hidden so the first usable path is Windows-to-Linux SSH. NATS/JetStream is reserved for a later reliable-queue transport.
 
 ### ⏰ Cron-Based Automation

@@ -2,11 +2,13 @@ import { spawn } from 'node:child_process';
 import { hostname, networkInterfaces, userInfo, type NetworkInterfaceInfo } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { Client, type ConnectConfig } from 'ssh2';
 import { listAgentsSnapshot } from '../utils/agent-config';
 import { readOpenClawConfig, writeOpenClawConfig, type OpenClawConfig } from '../utils/channel-config';
 import { withConfigLock } from '../utils/config-mutex';
 import { expandPath, getOpenClawDir, getOpenClawEntryPath } from '../utils/paths';
 import { logger } from '../utils/logger';
+import { deleteProviderSecret, getProviderSecret, setProviderSecret } from './secrets/secret-store';
 
 export type IntercomTransport = 'local' | 'ssh' | 'nats';
 
@@ -20,6 +22,7 @@ export interface IntercomRoute {
   enabled: boolean;
   sshUser?: string;
   sshPort?: number;
+  sshPasswordConfigured?: boolean;
   remoteCommand?: string;
   source: 'config' | 'local';
 }
@@ -53,6 +56,8 @@ export interface IntercomRouteInput {
   enabled?: boolean;
   sshUser?: string;
   sshPort?: number | null;
+  sshPassword?: string;
+  clearSshPassword?: boolean;
   remoteCommand?: string;
 }
 
@@ -95,6 +100,7 @@ const ROUTE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const INTERCOM_PROTOCOL_MARKER = 'KTClaw Intercom Protocol';
 const SSH_CONNECT_TIMEOUT_SECONDS = 10;
 const INTERCOM_COMMAND_TIMEOUT_MS = 60_000;
+const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -117,6 +123,40 @@ function normalizePositiveInteger(value: unknown): number | undefined {
     return undefined;
   }
   return value;
+}
+
+function getIntercomSshSecretId(routeId: string): string {
+  return `${INTERCOM_SSH_SECRET_PREFIX}${routeId}`;
+}
+
+function readSecretString(secret: Awaited<ReturnType<typeof getProviderSecret>>): string | null {
+  if (!secret || !('apiKey' in secret) || typeof secret.apiKey !== 'string') {
+    return null;
+  }
+  return secret.apiKey;
+}
+
+async function getIntercomSshPassword(routeId: string): Promise<string | null> {
+  return readSecretString(await getProviderSecret(getIntercomSshSecretId(routeId)));
+}
+
+async function hasIntercomSshPassword(routeId: string): Promise<boolean> {
+  return (await getIntercomSshPassword(routeId)) !== null;
+}
+
+async function updateIntercomSshPassword(routeId: string, input: IntercomRouteInput): Promise<void> {
+  const secretId = getIntercomSshSecretId(routeId);
+  if (input.clearSshPassword) {
+    await deleteProviderSecret(secretId);
+    return;
+  }
+  if (typeof input.sshPassword === 'string' && input.sshPassword.length > 0) {
+    await setProviderSecret({
+      type: 'local',
+      accountId: secretId,
+      apiKey: input.sshPassword,
+    });
+  }
 }
 
 function getStoredIntercomConfig(config: IntercomConfigDocument): StoredIntercomConfig {
@@ -264,6 +304,7 @@ function normalizeStoredRoute(
   id: string,
   value: Partial<IntercomRouteInput> | undefined,
   config: IntercomConfigDocument,
+  passwordConfigured = false,
 ): IntercomRoute | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -287,6 +328,7 @@ function normalizeStoredRoute(
     enabled: value.enabled !== false,
     sshUser: normalizeString(value.sshUser) || undefined,
     sshPort: normalizePositiveInteger(value.sshPort),
+    sshPasswordConfigured: passwordConfigured,
     remoteCommand: normalizeString(value.remoteCommand) || undefined,
     source: 'config',
   };
@@ -311,6 +353,7 @@ function normalizeRouteForStorage(input: IntercomRouteInput, config: IntercomCon
     enabled: input.enabled !== false,
     sshUser: normalizeString(input.sshUser) || undefined,
     sshPort: normalizePositiveInteger(input.sshPort),
+    sshPasswordConfigured: false,
     remoteCommand: normalizeString(input.remoteCommand) || undefined,
     source: 'config',
   };
@@ -362,10 +405,21 @@ function buildLocalCommand(route: IntercomRoute, message: string, sessionId: str
   };
 }
 
-function buildSshCommand(route: IntercomRoute, message: string, sessionId: string) {
-  const host = route.sshUser && !route.host.includes('@')
-    ? `${route.sshUser}@${route.host}`
-    : route.host;
+function resolveSshHostAndUsername(route: IntercomRoute): { host: string; username?: string } {
+  if (route.sshUser || !route.host.includes('@')) {
+    return {
+      host: route.host,
+      username: route.sshUser,
+    };
+  }
+  const [username, ...hostParts] = route.host.split('@');
+  return {
+    host: hostParts.join('@') || route.host,
+    username: username || undefined,
+  };
+}
+
+function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const remoteArgs = [
     'agent',
     '--agent',
@@ -380,7 +434,12 @@ function buildSshCommand(route: IntercomRoute, message: string, sessionId: strin
   const remoteCommandPrefix = /[\s'"\\]/.test(openclawCommand)
     ? quotePosix(openclawCommand)
     : openclawCommand;
-  const remoteCommand = `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
+  return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
+}
+
+function buildSshCommand(route: IntercomRoute, message: string, sessionId: string) {
+  const resolved = resolveSshHostAndUsername(route);
+  const host = resolved.username ? `${resolved.username}@${resolved.host}` : resolved.host;
   return {
     command: 'ssh',
     args: [
@@ -396,11 +455,119 @@ function buildSshCommand(route: IntercomRoute, message: string, sessionId: strin
       'NumberOfPasswordPrompts=0',
       ...(route.sshPort ? ['-p', String(route.sshPort)] : []),
       host,
-      remoteCommand,
+      buildRemoteCommand(route, message, sessionId),
     ],
     cwd: undefined,
     env: process.env,
   };
+}
+
+function runSsh2Command(route: IntercomRoute, password: string, message: string, sessionId: string) {
+  const startedAt = Date.now();
+  const resolved = resolveSshHostAndUsername(route);
+  const username = resolved.username || userInfo().username;
+  const remoteCommand = buildRemoteCommand(route, message, sessionId);
+  const connectionConfig: ConnectConfig = {
+    host: resolved.host,
+    port: route.sshPort ?? 22,
+    username,
+    password,
+    readyTimeout: SSH_CONNECT_TIMEOUT_SECONDS * 1000,
+    timeout: SSH_CONNECT_TIMEOUT_SECONDS * 1000,
+    tryKeyboard: true,
+  };
+
+  return new Promise<{ exitCode: number | null; stdout: string; stderr: string; durationMs: number }>((resolve, reject) => {
+    const client = new Client();
+    let completed = false;
+    let stdout = '';
+    let stderr = '';
+    let exitCode: number | null = null;
+
+    const finish = (callback: () => void) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timeout);
+      client.end();
+      callback();
+    };
+    const buildResult = () => ({
+      exitCode,
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      durationMs: Date.now() - startedAt,
+    });
+    const timeout = setTimeout(() => {
+      const result = buildResult();
+      const message = `Intercom SSH command timed out after ${Math.round(INTERCOM_COMMAND_TIMEOUT_MS / 1000)}s`;
+      const error = new Error(`${message}. Check whether the remote OpenClaw command exits.`);
+      Object.assign(error, {
+        ...result,
+        stderr: result.stderr || message,
+      });
+      logger.warn('Intercom SSH2 command timed out', {
+        host: resolved.host,
+        durationMs: result.durationMs,
+      });
+      finish(() => reject(error));
+    }, INTERCOM_COMMAND_TIMEOUT_MS);
+
+    client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, done) => {
+      done(prompts.map(() => password));
+    });
+    client.on('error', (error) => {
+      logger.warn('Failed to run intercom SSH2 command', {
+        host: resolved.host,
+        error: String(error),
+      });
+      const result = buildResult();
+      Object.assign(error, {
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr || error.message,
+        durationMs: result.durationMs,
+      });
+      finish(() => reject(error));
+    });
+    client.on('ready', () => {
+      client.exec(remoteCommand, (error, channel) => {
+        if (error) {
+          const result = buildResult();
+          Object.assign(error, {
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr || error.message,
+            durationMs: result.durationMs,
+          });
+          finish(() => reject(error));
+          return;
+        }
+        channel.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        channel.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        channel.on('exit', (code: number | null) => {
+          exitCode = code;
+        });
+        channel.on('close', () => {
+          const result = buildResult();
+          if (result.exitCode && result.exitCode !== 0) {
+            const details = result.stderr || result.stdout || `exit code ${result.exitCode}`;
+            const commandError = new Error(`Intercom command failed: ${details}`);
+            Object.assign(commandError, result);
+            finish(() => reject(commandError));
+            return;
+          }
+          finish(() => resolve(result));
+        });
+      });
+    });
+    client.connect(connectionConfig);
+  });
 }
 
 function runIntercomCommand(command: string, args: string[], options: {
@@ -503,7 +670,7 @@ export async function getIntercomSnapshot(): Promise<IntercomSnapshot> {
   const routesById = new Map<string, IntercomRoute>();
 
   for (const [id, value] of Object.entries(explicitAgents)) {
-    const route = normalizeStoredRoute(id, value, config);
+    const route = normalizeStoredRoute(id, value, config, await hasIntercomSshPassword(id));
     if (route) {
       routesById.set(route.id, route);
     }
@@ -540,6 +707,7 @@ export async function upsertIntercomRoute(input: IntercomRouteInput): Promise<In
   await withConfigLock(async () => {
     const config = await readOpenClawConfig() as IntercomConfigDocument;
     const route = normalizeRouteForStorage(input, config);
+    await updateIntercomSshPassword(route.id, input);
     const intercom = ensureIntercomConfig(config);
     intercom.agents = {
       ...(intercom.agents ?? {}),
@@ -556,6 +724,7 @@ export async function deleteIntercomRoute(routeId: string): Promise<IntercomSnap
     const intercom = ensureIntercomConfig(config);
     const id = normalizeRouteId(routeId);
     delete intercom.agents?.[id];
+    await deleteProviderSecret(getIntercomSshSecretId(id));
     await writeOpenClawConfig(config);
   });
   return getIntercomSnapshot();
@@ -583,13 +752,24 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
 
   const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
   const finalMessage = buildCallerMessage(sender, message);
-  const invocation = route.transport === 'ssh'
-    ? buildSshCommand(route, finalMessage, sessionId)
-    : buildLocalCommand(route, finalMessage, sessionId);
-  const commandResult = await runIntercomCommand(invocation.command, invocation.args, {
-    cwd: invocation.cwd,
-    env: invocation.env,
-  });
+  const sshPassword = route.transport === 'ssh' ? await getIntercomSshPassword(route.id) : null;
+  const invocation = route.transport === 'ssh' && sshPassword
+    ? {
+        command: 'ssh2',
+        args: [
+          `${resolveSshHostAndUsername(route).username || userInfo().username}@${resolveSshHostAndUsername(route).host}`,
+          buildRemoteCommand(route, finalMessage, sessionId),
+        ],
+      }
+    : route.transport === 'ssh'
+      ? buildSshCommand(route, finalMessage, sessionId)
+      : buildLocalCommand(route, finalMessage, sessionId);
+  const commandResult = route.transport === 'ssh' && sshPassword
+    ? await runSsh2Command(route, sshPassword, finalMessage, sessionId)
+    : await runIntercomCommand(invocation.command, invocation.args, {
+        cwd: 'cwd' in invocation ? invocation.cwd : undefined,
+        env: 'env' in invocation ? invocation.env : process.env,
+      });
 
   return {
     success: true,

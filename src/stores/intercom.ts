@@ -14,6 +14,7 @@ export type IntercomRoute = {
   enabled: boolean;
   sshUser: string | null;
   sshPort: number | null;
+  sshPasswordConfigured: boolean;
   remoteCommand: string | null;
   source: 'config' | 'local';
 };
@@ -39,6 +40,8 @@ export type IntercomRouteInput = {
   enabled?: boolean;
   sshUser?: string;
   sshPort?: number | null;
+  sshPassword?: string;
+  clearSshPassword?: boolean;
   remoteCommand?: string;
 };
 
@@ -124,6 +127,7 @@ function normalizeRoute(value: unknown): IntercomRoute | null {
     enabled: value.enabled !== false,
     sshUser: readString(value.sshUser),
     sshPort: typeof value.sshPort === 'number' && Number.isFinite(value.sshPort) ? value.sshPort : null,
+    sshPasswordConfigured: value.sshPasswordConfigured === true,
     remoteCommand: readString(value.remoteCommand),
     source: value.source === 'config' ? 'config' : 'local',
   };

@@ -278,6 +278,7 @@ export function SettingsRemoteInstancesPanel() {
                     <span>{t('remoteInstances.intercom.agentIdLabel')}: {route.agent}</span>
                     <span>{t('remoteInstances.intercom.sessionLabel')}: {route.sessionId}</span>
                     <span>{t('remoteInstances.intercom.remoteCommandLabel')}: {route.remoteCommand || 'openclaw'}</span>
+                    <span>{t('remoteInstances.intercom.sshPasswordLabel')}: {route.sshPasswordConfigured ? t('remoteInstances.intercom.passwordConfigured') : t('remoteInstances.intercom.passwordNotConfigured')}</span>
                   </div>
                 </div>
               ))}

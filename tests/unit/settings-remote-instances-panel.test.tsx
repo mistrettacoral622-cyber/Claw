@@ -59,6 +59,9 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.agentIdLabel': 'Agent ID',
         'remoteInstances.intercom.sessionLabel': 'Session',
         'remoteInstances.intercom.sshPortLabel': 'SSH port',
+        'remoteInstances.intercom.sshPasswordLabel': 'SSH password',
+        'remoteInstances.intercom.passwordConfigured': 'Saved',
+        'remoteInstances.intercom.passwordNotConfigured': 'Not saved',
         'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
         'remoteInstances.intercom.enabledLabel': 'Enabled',
         'remoteInstances.intercom.disabledLabel': 'Disabled',
@@ -94,6 +97,7 @@ const READY_INTERCOM_RESPONSE = {
       enabled: true,
       sshUser: 'root',
       sshPort: 22,
+      sshPasswordConfigured: true,
       remoteCommand: 'openclaw',
       source: 'config',
     },
@@ -149,6 +153,7 @@ describe('SettingsRemoteInstancesPanel', () => {
     expect(screen.getByText('Dev Agent')).toBeInTheDocument();
     expect(screen.getByText('Linux KTClaw')).toBeInTheDocument();
     expect(screen.getByText('ssh root@10.101.208.178 -p 22')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('SSH password: Saved');
 
     expect(screen.queryByText('Agent Card URL')).not.toBeInTheDocument();
     expect(screen.queryByText('My Agent Card URL')).not.toBeInTheDocument();

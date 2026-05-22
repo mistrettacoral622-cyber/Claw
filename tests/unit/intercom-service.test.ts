@@ -2,11 +2,18 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { configStore, spawnMock } = vi.hoisted(() => ({
+const { configStore, secretStore, spawnMock, sshClientInstances } = vi.hoisted(() => ({
   configStore: {
     current: {} as Record<string, unknown>,
   },
+  secretStore: new Map<string, unknown>(),
   spawnMock: vi.fn(),
+  sshClientInstances: [] as Array<{
+    handlers: Map<string, (...args: unknown[]) => void>;
+    connect: ReturnType<typeof vi.fn>;
+    exec: ReturnType<typeof vi.fn>;
+    end: ReturnType<typeof vi.fn>;
+  }>,
 }));
 
 function createProcessMock(options: {
@@ -57,6 +64,47 @@ function createProcessMock(options: {
 
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
+}));
+
+vi.mock('ssh2', () => ({
+  Client: vi.fn(function ClientMock() {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const instance = {
+      handlers,
+      connect: vi.fn(() => {
+        setImmediate(() => handlers.get('ready')?.());
+        return instance;
+      }),
+      exec: vi.fn((_command: string, callback: (error: Error | undefined, channel: unknown) => void) => {
+        const channelHandlers = new Map<string, (...args: unknown[]) => void>();
+        const stderrHandlers = new Map<string, (...args: unknown[]) => void>();
+        const channel = {
+          stderr: {
+            on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+              stderrHandlers.set(event, handler);
+            }),
+          },
+          on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+            channelHandlers.set(event, handler);
+          }),
+        };
+        callback(undefined, channel);
+        setImmediate(() => {
+          channelHandlers.get('data')?.(Buffer.from('{"ok":true}\n'));
+          channelHandlers.get('exit')?.(0);
+          channelHandlers.get('close')?.();
+        });
+        return instance;
+      }),
+      end: vi.fn(() => instance),
+      on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+        handlers.set(event, handler);
+        return instance;
+      }),
+    };
+    sshClientInstances.push(instance);
+    return instance;
+  }),
 }));
 
 vi.mock('node:os', async () => {
@@ -117,10 +165,22 @@ vi.mock('@electron/utils/logger', () => ({
   },
 }));
 
+vi.mock('@electron/services/secrets/secret-store', () => ({
+  getProviderSecret: vi.fn(async (accountId: string) => secretStore.get(accountId) ?? null),
+  setProviderSecret: vi.fn(async (secret: { accountId: string }) => {
+    secretStore.set(secret.accountId, structuredClone(secret));
+  }),
+  deleteProviderSecret: vi.fn(async (accountId: string) => {
+    secretStore.delete(accountId);
+  }),
+}));
+
 describe('intercom service', () => {
   beforeEach(() => {
     vi.resetModules();
     configStore.current = {};
+    secretStore.clear();
+    sshClientInstances.length = 0;
     spawnMock.mockReset();
     spawnMock.mockReturnValue(createProcessMock({ stdout: '{"ok":true}\n' }));
   });
@@ -195,6 +255,31 @@ describe('intercom service', () => {
     }));
   });
 
+  it('stores SSH passwords in the local secret store instead of openclaw config', async () => {
+    const { upsertIntercomRoute, getIntercomSnapshot } = await import('@electron/services/intercom');
+
+    await upsertIntercomRoute({
+      id: 'ops',
+      displayName: 'Ops Agent',
+      host: 'srv-c',
+      agent: 'ops',
+      transport: 'ssh',
+      sshUser: 'ubuntu',
+      sshPassword: 'linux-password',
+    });
+
+    expect(JSON.stringify(configStore.current)).not.toContain('linux-password');
+    expect(secretStore.get('intercom:ssh:ops')).toEqual({
+      type: 'local',
+      accountId: 'intercom:ssh:ops',
+      apiKey: 'linux-password',
+    });
+    const snapshot = await getIntercomSnapshot();
+    expect(snapshot.routes.find((route) => route.id === 'ops')).toEqual(expect.objectContaining({
+      sshPasswordConfigured: true,
+    }));
+  });
+
   it('sends SSH intercom messages and captures remote output', async () => {
     configStore.current = {
       intercom: {
@@ -253,6 +338,51 @@ describe('intercom service', () => {
     );
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('[from agent dev] 更新头像');
+  });
+
+  it('sends password-backed SSH intercom messages through ssh2', async () => {
+    secretStore.set('intercom:ssh:ops', {
+      type: 'local',
+      accountId: 'intercom:ssh:ops',
+      apiKey: 'linux-password',
+    });
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            sshPort: 2222,
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      command: 'ssh2',
+      stdout: '{"ok":true}',
+    }));
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(sshClientInstances[0]?.connect).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'srv-c',
+      port: 2222,
+      username: 'ubuntu',
+      password: 'linux-password',
+    }));
+    expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
+      expect.stringContaining("openclaw 'agent' '--agent' 'ops'"),
+      expect.any(Function),
+    );
   });
 
   it('times out intercom commands that never exit', async () => {

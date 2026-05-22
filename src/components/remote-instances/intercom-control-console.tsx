@@ -12,6 +12,7 @@ import {
   Settings2,
   Shield,
   Terminal,
+  Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
@@ -151,6 +152,8 @@ export function IntercomControlConsole() {
         enabled: true,
         sshUser: routeDraft.sshUser.trim() || undefined,
         sshPort: normalizeIntercomPort(routeDraft.sshPort),
+        sshPassword: routeDraft.sshPassword || undefined,
+        clearSshPassword: routeDraft.clearSshPassword,
         remoteCommand: routeDraft.remoteCommand.trim() || 'openclaw',
       });
       setSelectedRouteId(nextId);
@@ -513,6 +516,48 @@ export function IntercomControlConsole() {
                 value={routeDraft.sshPort}
                 onChange={(event) => setRouteDraft((current) => ({ ...current, sshPort: event.target.value }))}
               />
+            </label>
+
+            <label className="space-y-2 md:col-span-2">
+              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                {t('remoteInstances.intercom.sshPasswordLabel')}
+              </span>
+              <Input
+                aria-label="SSH password"
+                type="password"
+                placeholder={routeDraft.sshPasswordConfigured && !routeDraft.clearSshPassword
+                  ? t('remoteInstances.intercom.passwordSavedPlaceholder')
+                  : t('remoteInstances.intercom.optionalPlaceholder')}
+                value={routeDraft.sshPassword}
+                onChange={(event) => setRouteDraft((current) => ({
+                  ...current,
+                  sshPassword: event.target.value,
+                  clearSshPassword: false,
+                }))}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] leading-5 text-[#64748b] dark:text-muted-foreground">
+                  {routeDraft.sshPasswordConfigured && !routeDraft.clearSshPassword
+                    ? t('remoteInstances.intercom.passwordSavedHint')
+                    : t('remoteInstances.intercom.passwordOptionalHint')}
+                </p>
+                {routeDraft.sshPasswordConfigured ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                    onClick={() => setRouteDraft((current) => ({
+                      ...current,
+                      sshPassword: '',
+                      clearSshPassword: true,
+                    }))}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {t('remoteInstances.intercom.clearPassword')}
+                  </Button>
+                ) : null}
+              </div>
             </label>
 
             <label className="space-y-2">

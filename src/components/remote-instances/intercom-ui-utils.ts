@@ -6,6 +6,9 @@ export type IntercomRouteDraft = {
   host: string;
   sshUser: string;
   sshPort: string;
+  sshPassword: string;
+  clearSshPassword: boolean;
+  sshPasswordConfigured: boolean;
   agent: string;
   sessionId: string;
   remoteCommand: string;
@@ -21,6 +24,9 @@ export function emptyIntercomRouteDraft(): IntercomRouteDraft {
     host: '',
     sshUser: '',
     sshPort: '22',
+    sshPassword: '',
+    clearSshPassword: false,
+    sshPasswordConfigured: false,
     agent: 'main',
     sessionId: DEFAULT_INTERCOM_SESSION_ID,
     remoteCommand: 'openclaw',
@@ -38,6 +44,9 @@ export function deriveIntercomRouteDraft(route: IntercomRoute | null): IntercomR
     host: route.host,
     sshUser: route.sshUser ?? '',
     sshPort: route.sshPort ? String(route.sshPort) : '22',
+    sshPassword: '',
+    clearSshPassword: false,
+    sshPasswordConfigured: route.sshPasswordConfigured,
     agent: route.agent,
     sessionId: route.sessionId || DEFAULT_INTERCOM_SESSION_ID,
     remoteCommand: route.remoteCommand || 'openclaw',

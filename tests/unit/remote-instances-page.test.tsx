@@ -40,6 +40,11 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.hostLabel': 'Host',
         'remoteInstances.intercom.sshUserLabel': 'SSH user',
         'remoteInstances.intercom.sshPortLabel': 'SSH port',
+        'remoteInstances.intercom.sshPasswordLabel': 'SSH password',
+        'remoteInstances.intercom.passwordSavedPlaceholder': 'Password saved',
+        'remoteInstances.intercom.passwordSavedHint': 'Leave blank to keep the saved password.',
+        'remoteInstances.intercom.passwordOptionalHint': 'Optional password login.',
+        'remoteInstances.intercom.clearPassword': 'Clear password',
         'remoteInstances.intercom.agentIdLabel': 'Agent ID',
         'remoteInstances.intercom.sessionLabel': 'Session',
         'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
@@ -87,6 +92,7 @@ const READY_INTERCOM_RESPONSE = {
       enabled: true,
       sshUser: 'root',
       sshPort: 22,
+      sshPasswordConfigured: true,
       remoteCommand: 'openclaw',
       source: 'config',
     },
@@ -138,5 +144,7 @@ describe('RemoteInstances page', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('Instance configuration')).toBeInTheDocument();
     expect(screen.getByLabelText('Linux host')).toHaveValue('10.101.208.178');
+    expect(screen.getByLabelText('SSH password')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Password saved')).toBeInTheDocument();
   });
 });
