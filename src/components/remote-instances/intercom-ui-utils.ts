@@ -22,8 +22,8 @@ export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND =
 
 export function emptyIntercomRouteDraft(): IntercomRouteDraft {
   return {
-    id: DEFAULT_INTERCOM_ROUTE_ID,
-    displayName: 'Linux KTClaw',
+    id: '',
+    displayName: '',
     host: '',
     sshUser: '',
     sshPort: '22',

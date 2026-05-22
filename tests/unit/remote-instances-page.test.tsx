@@ -45,6 +45,8 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.passwordSavedHint': 'Leave blank to keep the saved password.',
         'remoteInstances.intercom.passwordOptionalHint': 'Optional password login.',
         'remoteInstances.intercom.clearPassword': 'Clear password',
+        'remoteInstances.intercom.showAdvancedConfig': 'Show advanced options',
+        'remoteInstances.intercom.hideAdvancedConfig': 'Hide advanced options',
         'remoteInstances.intercom.agentIdLabel': 'Agent ID',
         'remoteInstances.intercom.sessionLabel': 'Session',
         'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
@@ -146,5 +148,71 @@ describe('RemoteInstances page', () => {
     expect(screen.getByLabelText('Linux host')).toHaveValue('10.101.208.178');
     expect(screen.getByLabelText('SSH password')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Password saved')).toBeInTheDocument();
+    expect(screen.queryByLabelText('SSH port')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Intercom session')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Remote OpenClaw command')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show advanced options' }));
+
+    expect(screen.getByLabelText('SSH port')).toHaveValue('22');
+    expect(screen.getByLabelText('Intercom session')).toHaveValue('intercom');
+    expect(screen.getByLabelText('Remote OpenClaw command')).toHaveValue('openclaw');
+  });
+
+  it('saves a new route from minimal connection fields', async () => {
+    vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/api/intercom' && (!init || init.method === undefined)) {
+        return { ...READY_INTERCOM_RESPONSE, routes: [] };
+      }
+      if (path === '/api/intercom/routes' && init?.method === 'POST') {
+        return READY_INTERCOM_RESPONSE;
+      }
+      return READY_INTERCOM_RESPONSE;
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Route ID')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Intercom session')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Remote OpenClaw command')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Linux host'), {
+      target: { value: '10.101.208.178' },
+    });
+    fireEvent.change(screen.getByLabelText('SSH user'), {
+      target: { value: 'sunyb9' },
+    });
+    fireEvent.change(screen.getByLabelText('SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.change(screen.getByLabelText('Linux agent id'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save route' }));
+
+    expect(hostApiFetch).toHaveBeenCalledWith(
+      '/api/intercom/routes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          id: '10.101.208.178-main',
+          displayName: '10.101.208.178 / main',
+          host: '10.101.208.178',
+          agent: 'main',
+          transport: 'ssh',
+          sessionId: 'intercom',
+          enabled: true,
+          sshUser: 'sunyb9',
+          sshPort: 22,
+          sshPassword: 'secret',
+          clearSshPassword: false,
+          remoteCommand: 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs',
+        }),
+      }),
+    );
   });
 });

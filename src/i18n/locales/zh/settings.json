@@ -597,6 +597,8 @@
       "passwordSavedHint": "留空会继续使用已保存的密码。",
       "passwordOptionalHint": "可选。远端机器允许 SSH 密码登录时填写。",
       "clearPassword": "清除密码",
+      "showAdvancedConfig": "显示高级选项",
+      "hideAdvancedConfig": "隐藏高级选项",
       "remoteCommandLabel": "远端 OpenClaw 命令",
       "previewLabel": "命令预览",
       "routeReady": "路由已保存",

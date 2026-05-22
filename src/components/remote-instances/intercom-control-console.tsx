@@ -119,6 +119,35 @@ function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): R
   return [];
 }
 
+function routeIdPart(value: string, fallback: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function deriveRouteIdFromDraft(route: IntercomRouteDraft): string {
+  const explicitId = route.id.trim();
+  if (explicitId) {
+    return explicitId;
+  }
+  const host = routeIdPart(route.host, 'linux');
+  const agent = routeIdPart(route.agent, 'main');
+  return `${host}-${agent}`;
+}
+
+function deriveDisplayNameFromDraft(route: IntercomRouteDraft, routeId: string): string {
+  const explicitName = route.displayName.trim();
+  if (explicitName) {
+    return explicitName;
+  }
+  const host = route.host.trim();
+  const agent = route.agent.trim() || 'main';
+  return host ? `${host} / ${agent}` : routeId;
+}
+
 export function IntercomControlConsole() {
   const { t } = useTranslation('settings');
   const routes = useIntercomStore((state) => state.routes);
@@ -140,6 +169,7 @@ export function IntercomControlConsole() {
 
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [configOpen, setConfigOpen] = useState(false);
+  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const [routeDraft, setRouteDraft] = useState<IntercomRouteDraft>(() => emptyIntercomRouteDraft());
   const [messageDraft, setMessageDraft] = useState<MessageDraft>({
     sender: '',
@@ -196,7 +226,6 @@ export function IntercomControlConsole() {
 
   const canSaveRoute =
     !saving &&
-    Boolean(routeDraft.id.trim()) &&
     Boolean(routeDraft.host.trim()) &&
     Boolean(routeDraft.agent.trim());
   const canSend =
@@ -207,25 +236,29 @@ export function IntercomControlConsole() {
 
   const openNewRouteConfig = () => {
     setRouteDraft(emptyIntercomRouteDraft());
+    setAdvancedConfigOpen(false);
     setConfigOpen(true);
   };
 
   const openRouteConfig = (route: IntercomRoute) => {
     setSelectedRouteId(route.id);
     setRouteDraft(deriveIntercomRouteDraft(route));
+    setAdvancedConfigOpen(false);
     setConfigOpen(true);
   };
 
   const handleSaveRoute = async () => {
-    const nextId = routeDraft.id.trim();
+    const nextId = deriveRouteIdFromDraft(routeDraft);
+    const nextAgent = routeDraft.agent.trim() || 'main';
+    const nextSessionId = routeDraft.sessionId.trim() || DEFAULT_INTERCOM_SESSION_ID;
     try {
       await upsertRoute({
         id: nextId,
-        displayName: routeDraft.displayName.trim() || nextId,
+        displayName: deriveDisplayNameFromDraft(routeDraft, nextId),
         host: routeDraft.host.trim(),
-        agent: routeDraft.agent.trim(),
+        agent: nextAgent,
         transport: 'ssh',
-        sessionId: routeDraft.sessionId.trim() || DEFAULT_INTERCOM_SESSION_ID,
+        sessionId: nextSessionId,
         enabled: true,
         sshUser: routeDraft.sshUser.trim() || undefined,
         sshPort: normalizeIntercomPort(routeDraft.sshPort),
@@ -656,7 +689,7 @@ export function IntercomControlConsole() {
               />
             </label>
 
-            <label className="space-y-2">
+            <label className="space-y-2 md:col-span-2">
               <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
                 {t('remoteInstances.intercom.sshUserLabel')}
               </span>
@@ -665,19 +698,6 @@ export function IntercomControlConsole() {
                 placeholder="root"
                 value={routeDraft.sshUser}
                 onChange={(event) => setRouteDraft((current) => ({ ...current, sshUser: event.target.value }))}
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                {t('remoteInstances.intercom.sshPortLabel')}
-              </span>
-              <Input
-                aria-label="SSH port"
-                inputMode="numeric"
-                placeholder="22"
-                value={routeDraft.sshPort}
-                onChange={(event) => setRouteDraft((current) => ({ ...current, sshPort: event.target.value }))}
               />
             </label>
 
@@ -723,7 +743,7 @@ export function IntercomControlConsole() {
               </div>
             </label>
 
-            <label className="space-y-2">
+            <label className="space-y-2 md:col-span-2">
               <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
                 {t('remoteInstances.intercom.agentIdLabel')}
               </span>
@@ -735,52 +755,85 @@ export function IntercomControlConsole() {
               />
             </label>
 
-            <label className="space-y-2">
-              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                {t('remoteInstances.intercom.sessionLabel')}
-              </span>
-              <Input
-                aria-label="Intercom session"
-                placeholder="intercom"
-                value={routeDraft.sessionId}
-                onChange={(event) => setRouteDraft((current) => ({ ...current, sessionId: event.target.value }))}
-              />
-            </label>
+            <div className="md:col-span-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-2 px-0 text-[#64748b] hover:bg-transparent hover:text-[#0f172a] dark:text-muted-foreground dark:hover:text-foreground"
+                onClick={() => setAdvancedConfigOpen((value) => !value)}
+              >
+                <ChevronDown className={`h-4 w-4 transition-transform ${advancedConfigOpen ? 'rotate-180' : ''}`} />
+                {advancedConfigOpen
+                  ? t('remoteInstances.intercom.hideAdvancedConfig')
+                  : t('remoteInstances.intercom.showAdvancedConfig')}
+              </Button>
+            </div>
 
-            <label className="space-y-2 md:col-span-2">
-              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                {t('remoteInstances.intercom.remoteCommandLabel')}
-              </span>
-              <Input
-                aria-label="Remote OpenClaw command"
-                placeholder={DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND}
-                value={routeDraft.remoteCommand}
-                onChange={(event) => setRouteDraft((current) => ({ ...current, remoteCommand: event.target.value }))}
-              />
-            </label>
+            {advancedConfigOpen ? (
+              <>
+                <label className="space-y-2 md:col-span-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.displayNameLabel')}
+                  </span>
+                  <Input
+                    aria-label="Display name"
+                    placeholder={deriveDisplayNameFromDraft({ ...routeDraft, displayName: '' }, deriveRouteIdFromDraft(routeDraft))}
+                    value={routeDraft.displayName}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, displayName: event.target.value }))}
+                  />
+                </label>
 
-            <label className="space-y-2">
-              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                {t('remoteInstances.intercom.routeIdLabel')}
-              </span>
-              <Input
-                aria-label="Route ID"
-                placeholder={DEFAULT_INTERCOM_ROUTE_ID}
-                value={routeDraft.id}
-                onChange={(event) => setRouteDraft((current) => ({ ...current, id: event.target.value }))}
-              />
-            </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.sshPortLabel')}
+                  </span>
+                  <Input
+                    aria-label="SSH port"
+                    inputMode="numeric"
+                    placeholder="22"
+                    value={routeDraft.sshPort}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, sshPort: event.target.value }))}
+                  />
+                </label>
 
-            <label className="space-y-2">
-              <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                {t('remoteInstances.intercom.displayNameLabel')}
-              </span>
-              <Input
-                aria-label="Display name"
-                value={routeDraft.displayName}
-                onChange={(event) => setRouteDraft((current) => ({ ...current, displayName: event.target.value }))}
-              />
-            </label>
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.sessionLabel')}
+                  </span>
+                  <Input
+                    aria-label="Intercom session"
+                    placeholder="intercom"
+                    value={routeDraft.sessionId}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, sessionId: event.target.value }))}
+                  />
+                </label>
+
+                <label className="space-y-2 md:col-span-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.remoteCommandLabel')}
+                  </span>
+                  <Input
+                    aria-label="Remote OpenClaw command"
+                    placeholder={DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND}
+                    value={routeDraft.remoteCommand}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, remoteCommand: event.target.value }))}
+                  />
+                </label>
+
+                <label className="space-y-2 md:col-span-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.routeIdLabel')}
+                  </span>
+                  <Input
+                    aria-label="Route ID"
+                    placeholder={deriveRouteIdFromDraft({ ...routeDraft, id: '' }) || DEFAULT_INTERCOM_ROUTE_ID}
+                    value={routeDraft.id}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, id: event.target.value }))}
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
 
           <SheetFooter className="mt-5">

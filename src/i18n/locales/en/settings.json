@@ -631,6 +631,8 @@
       "passwordSavedHint": "Leave blank to keep the saved password.",
       "passwordOptionalHint": "Optional. Use this when the remote machine accepts password SSH login.",
       "clearPassword": "Clear password",
+      "showAdvancedConfig": "Show advanced options",
+      "hideAdvancedConfig": "Hide advanced options",
       "remoteCommandLabel": "Remote OpenClaw command",
       "previewLabel": "Command preview",
       "routeReady": "Route saved",
