@@ -247,6 +247,27 @@ describe('intercom service', () => {
     })).toBe('192.168.1.45');
   });
 
+  it('reports host readiness for sharing this machine', async () => {
+    const { getIntercomHostReadiness } = await import('@electron/services/intercom');
+
+    const readiness = await getIntercomHostReadiness();
+
+    expect(readiness).toEqual(expect.objectContaining({
+      platform: process.platform,
+      host: '10.101.208.55',
+      sshUser: 'tester',
+      sshPort: 22,
+      agentId: 'main',
+      sessionId: 'intercom',
+      canPrepare: expect.any(Boolean),
+    }));
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'lan-host', status: 'ok' }),
+      expect.objectContaining({ id: 'ssh-user', status: 'ok' }),
+      expect.objectContaining({ id: 'agent', status: 'ok' }),
+    ]));
+  });
+
   it('persists an SSH route under KTClaw intercom config without touching OpenClaw root schema', async () => {
     const { upsertIntercomRoute } = await import('@electron/services/intercom');
 

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsRemoteInstancesPanel } from '@/components/settings-center/settings-remote-instances-panel';
@@ -43,6 +43,14 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.selfTitle': 'This KTClaw',
         'remoteInstances.intercom.selfShareTitle': 'Config others should enter',
         'remoteInstances.intercom.selfShareDescription': 'Give these values to another KTClaw user so they can add this machine as an SSH Intercom route. Host is the detected LAN IP when available.',
+        'remoteInstances.intercom.hostReady': 'Ready',
+        'remoteInstances.intercom.hostNeedsSetup': 'Needs setup',
+        'remoteInstances.intercom.hostReadyDescription': 'This machine looks ready for other KTClaw instances to connect.',
+        'remoteInstances.intercom.hostNeedsSetupDescription': 'This machine still needs SSH or network setup before others can connect.',
+        'remoteInstances.intercom.hostPrepareAdminHint': 'Preparation may open a system administrator prompt.',
+        'remoteInstances.intercom.hostPrepareNoAdminHint': 'Preparation can run without administrator changes.',
+        'remoteInstances.intercom.prepareHost': 'Prepare this machine',
+        'remoteInstances.intercom.hostChecksLabel': 'Connection checks',
         'remoteInstances.intercom.selfHostToShareLabel': 'SSH host/IP for others',
         'remoteInstances.intercom.selfSshUserLabel': 'SSH user on this machine',
         'remoteInstances.intercom.selfRouteExampleLabel': 'Route example',
@@ -65,6 +73,8 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
         'remoteInstances.intercom.enabledLabel': 'Enabled',
         'remoteInstances.intercom.disabledLabel': 'Disabled',
+        'remoteInstances.intercom.toasts.hostPrepared': 'Host prepared',
+        'remoteInstances.intercom.toasts.hostPrepareFailed': 'Host prepare failed',
       };
       return table[key] ?? key;
     },
@@ -104,6 +114,29 @@ const READY_INTERCOM_RESPONSE = {
   ],
 };
 
+const READY_HOST_RESPONSE = {
+  success: true,
+  ready: true,
+  platform: 'win32',
+  canPrepare: true,
+  needsAdmin: true,
+  host: '10.101.208.55',
+  sshUser: 'tester',
+  sshPort: 22,
+  agentId: 'dev',
+  sessionId: 'intercom',
+  remoteCommand: 'openclaw',
+  checks: [
+    {
+      id: 'ssh-listener',
+      status: 'ok',
+      title: 'SSH listener',
+      detail: 'SSH is accepting local connections on port 22.',
+    },
+  ],
+  prepareCommandPreview: 'Start-Service sshd',
+};
+
 function resetIntercomStore() {
   useIntercomStore.setState({
     routes: [],
@@ -115,7 +148,9 @@ function resetIntercomStore() {
     saving: false,
     sending: false,
     installingProtocol: false,
+    preparingHost: false,
     error: null,
+    hostReadiness: null,
   });
 }
 
@@ -131,7 +166,22 @@ describe('SettingsRemoteInstancesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetIntercomStore();
-    vi.mocked(hostApiFetch).mockResolvedValue(READY_INTERCOM_RESPONSE);
+    vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/api/intercom/host-readiness') {
+        return READY_HOST_RESPONSE;
+      }
+      if (path === '/api/intercom/prepare-host' && init?.method === 'POST') {
+        return {
+          success: true,
+          started: true,
+          stdout: '',
+          stderr: '',
+          error: null,
+          status: READY_HOST_RESPONSE,
+        };
+      }
+      return READY_INTERCOM_RESPONSE;
+    });
   });
 
   it('shows remote intercom management without exposing the A2A Agent Card setup', async () => {
@@ -139,6 +189,9 @@ describe('SettingsRemoteInstancesPanel', () => {
 
     expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
     expect(screen.getByText('This KTClaw')).toBeInTheDocument();
+    expect(await screen.findByText('Ready')).toBeInTheDocument();
+    expect(screen.getByText('Connection checks')).toBeInTheDocument();
+    expect(screen.getByText('SSH listener')).toBeInTheDocument();
     expect(screen.getByText('Config others should enter')).toBeInTheDocument();
     expect(screen.getByText('SSH host/IP for others')).toBeInTheDocument();
     expect(screen.getByText('SSH user on this machine')).toBeInTheDocument();
@@ -158,5 +211,18 @@ describe('SettingsRemoteInstancesPanel', () => {
     expect(screen.queryByText('Agent Card URL')).not.toBeInTheDocument();
     expect(screen.queryByText('My Agent Card URL')).not.toBeInTheDocument();
     expect(screen.queryByText('Enable inbound')).not.toBeInTheDocument();
+  });
+
+  it('can launch the host preparation flow from settings', async () => {
+    renderPanel();
+
+    expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare this machine' }));
+
+    await waitFor(() => {
+      expect(hostApiFetch).toHaveBeenCalledWith('/api/intercom/prepare-host', {
+        method: 'POST',
+      });
+    });
   });
 });

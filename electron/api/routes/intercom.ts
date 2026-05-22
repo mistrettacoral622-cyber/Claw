@@ -3,8 +3,10 @@ import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 import {
   deleteIntercomRoute,
+  getIntercomHostReadiness,
   getIntercomSnapshot,
   installIntercomProtocol,
+  prepareIntercomHost,
   sendIntercomMessage,
   upsertIntercomRoute,
   type IntercomRouteInput,
@@ -31,6 +33,24 @@ export async function handleIntercomRoutes(
   if (url.pathname === '/api/intercom' && req.method === 'GET') {
     try {
       sendJson(res, 200, { success: true, ...(await getIntercomSnapshot()) });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/host-readiness' && req.method === 'GET') {
+    try {
+      sendJson(res, 200, { success: true, ...(await getIntercomHostReadiness()) });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/prepare-host' && req.method === 'POST') {
+    try {
+      sendJson(res, 200, await prepareIntercomHost());
     } catch (error) {
       sendJson(res, 500, { success: false, error: error instanceof Error ? error.message : String(error) });
     }

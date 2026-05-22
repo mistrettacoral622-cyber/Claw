@@ -598,6 +598,14 @@
       "selfTitle": "This KTClaw",
       "selfShareTitle": "Config others should enter",
       "selfShareDescription": "Give these values to another KTClaw user so they can add this machine as an SSH Intercom route. Host is the detected LAN IP when available.",
+      "hostReady": "Ready",
+      "hostNeedsSetup": "Needs setup",
+      "hostReadyDescription": "This machine looks ready for other KTClaw instances to connect.",
+      "hostNeedsSetupDescription": "This machine still needs SSH or network setup before others can connect.",
+      "hostPrepareAdminHint": "Preparation may open a system administrator prompt to install/start SSH and allow the firewall rule.",
+      "hostPrepareNoAdminHint": "Preparation can run without administrator changes on this platform.",
+      "prepareHost": "Prepare this machine",
+      "hostChecksLabel": "Connection checks",
       "selfHostToShareLabel": "SSH host/IP for others",
       "selfSshUserLabel": "SSH user on this machine",
       "selfRouteExampleLabel": "Route example",
@@ -657,6 +665,8 @@
         "messageQueued": "Intercom message queued",
         "messageDelivered": "Intercom command completed (exit {{code}})",
         "messageFailed": "Failed to send intercom message",
+        "hostPrepared": "This machine is ready for intercom connections",
+        "hostPrepareFailed": "Failed to prepare this machine for intercom",
         "protocolInstalled": "Intercom SOP updated: {{updated}}, skipped: {{skipped}}",
         "protocolFailed": "Failed to install intercom SOP"
       }

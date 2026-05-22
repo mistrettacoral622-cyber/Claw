@@ -30,6 +30,39 @@ export type IntercomSelfConfig = {
   displayNameExample: string;
 };
 
+export type IntercomHostReadinessStatus = 'ok' | 'warning' | 'missing' | 'unknown';
+
+export type IntercomHostReadinessCheck = {
+  id: 'lan-host' | 'ssh-user' | 'agent' | 'ssh-listener' | 'firewall' | 'remote-command';
+  status: IntercomHostReadinessStatus;
+  title: string;
+  detail: string;
+};
+
+export type IntercomHostReadiness = {
+  ready: boolean;
+  platform: string;
+  canPrepare: boolean;
+  needsAdmin: boolean;
+  host: string;
+  sshUser: string | null;
+  sshPort: number;
+  agentId: string;
+  sessionId: string;
+  remoteCommand: string;
+  checks: IntercomHostReadinessCheck[];
+  prepareCommandPreview: string | null;
+};
+
+export type IntercomHostPrepareResult = {
+  success: boolean;
+  started: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+  status: IntercomHostReadiness;
+};
+
 export type IntercomRouteInput = {
   id: string;
   displayName?: string;
@@ -85,9 +118,13 @@ type IntercomState = {
   saving: boolean;
   sending: boolean;
   installingProtocol: boolean;
+  preparingHost: boolean;
   error: string | null;
   lastSendResult: IntercomSendResult | null;
+  hostReadiness: IntercomHostReadiness | null;
   fetchIntercom: (options?: { force?: boolean }) => Promise<void>;
+  fetchHostReadiness: () => Promise<void>;
+  prepareHost: () => Promise<IntercomHostPrepareResult>;
   upsertRoute: (input: IntercomRouteInput) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   sendMessage: (input: IntercomSendInput) => Promise<IntercomSendResult>;
@@ -156,6 +193,66 @@ function normalizeSelfConfig(value: unknown): IntercomSelfConfig | null {
   };
 }
 
+function readHostCheckId(value: unknown): IntercomHostReadinessCheck['id'] | null {
+  return value === 'lan-host'
+    || value === 'ssh-user'
+    || value === 'agent'
+    || value === 'ssh-listener'
+    || value === 'firewall'
+    || value === 'remote-command'
+    ? value
+    : null;
+}
+
+function readHostCheckStatus(value: unknown): IntercomHostReadinessStatus {
+  return value === 'ok' || value === 'warning' || value === 'missing' || value === 'unknown'
+    ? value
+    : 'unknown';
+}
+
+function normalizeHostReadinessCheck(value: unknown): IntercomHostReadinessCheck | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = readHostCheckId(value.id);
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    status: readHostCheckStatus(value.status),
+    title: readString(value.title) ?? id,
+    detail: readString(value.detail) ?? '',
+  };
+}
+
+function normalizeHostReadiness(value: unknown): IntercomHostReadiness | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const host = readString(value.host);
+  const agentId = readString(value.agentId);
+  if (!host || !agentId) {
+    return null;
+  }
+  return {
+    ready: value.ready === true,
+    platform: readString(value.platform) ?? 'unknown',
+    canPrepare: value.canPrepare === true,
+    needsAdmin: value.needsAdmin === true,
+    host,
+    sshUser: readString(value.sshUser),
+    sshPort: typeof value.sshPort === 'number' && Number.isFinite(value.sshPort) ? value.sshPort : 22,
+    agentId,
+    sessionId: readString(value.sessionId) ?? 'intercom',
+    remoteCommand: readString(value.remoteCommand) ?? 'openclaw',
+    checks: Array.isArray(value.checks)
+      ? value.checks.map(normalizeHostReadinessCheck).filter((entry): entry is IntercomHostReadinessCheck => entry !== null)
+      : [],
+    prepareCommandPreview: readString(value.prepareCommandPreview),
+  };
+}
+
 function normalizeSnapshot(value: unknown) {
   const row = isRecord(value) ? value : {};
   const localAgents = Array.isArray(row.localAgents)
@@ -181,6 +278,31 @@ function normalizeSnapshot(value: unknown) {
     localHost: readString(row.localHost),
     defaultSessionId: readString(row.defaultSessionId) ?? 'intercom',
     selfConfig: normalizeSelfConfig(row.selfConfig),
+  };
+}
+
+function normalizeHostPrepareResult(value: unknown): IntercomHostPrepareResult {
+  const row = isRecord(value) ? value : {};
+  return {
+    success: row.success === true,
+    started: row.started === true,
+    stdout: readString(row.stdout) ?? '',
+    stderr: readString(row.stderr) ?? '',
+    error: readString(row.error),
+    status: normalizeHostReadiness(row.status) ?? normalizeHostReadiness(row) ?? {
+      ready: false,
+      platform: 'unknown',
+      canPrepare: false,
+      needsAdmin: false,
+      host: '',
+      sshUser: null,
+      sshPort: 22,
+      agentId: 'main',
+      sessionId: 'intercom',
+      remoteCommand: 'openclaw',
+      checks: [],
+      prepareCommandPreview: null,
+    },
   };
 }
 
@@ -241,8 +363,10 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   saving: false,
   sending: false,
   installingProtocol: false,
+  preparingHost: false,
   error: null,
   lastSendResult: null,
+  hostReadiness: null,
 
   fetchIntercom: async (options) => {
     if (get().loading && !options?.force) {
@@ -257,6 +381,30 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
       });
     } catch (error) {
       set({ loading: false, error: toErrorMessage(error) });
+    }
+  },
+
+  fetchHostReadiness: async () => {
+    try {
+      const response = await hostApiFetch('/api/intercom/host-readiness');
+      set({ hostReadiness: normalizeHostReadiness(response), error: null });
+    } catch (error) {
+      set({ error: toErrorMessage(error) });
+    }
+  },
+
+  prepareHost: async () => {
+    set({ preparingHost: true, error: null });
+    try {
+      const response = await hostApiFetch('/api/intercom/prepare-host', {
+        method: 'POST',
+      });
+      const result = normalizeHostPrepareResult(response);
+      set({ preparingHost: false, hostReadiness: result.status });
+      return result;
+    } catch (error) {
+      set({ preparingHost: false, error: toErrorMessage(error) });
+      throw error;
     }
   },
 

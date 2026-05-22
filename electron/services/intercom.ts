@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { hostname, networkInterfaces, userInfo, type NetworkInterfaceInfo } from 'node:os';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { Socket } from 'node:net';
 import { Client, type ConnectConfig } from 'ssh2';
 import { listAgentsSnapshot } from '../utils/agent-config';
 import { readOpenClawConfig, writeOpenClawConfig, type OpenClawConfig } from '../utils/channel-config';
@@ -44,6 +45,39 @@ export interface IntercomSelfConfig {
   remoteCommand: string;
   routeIdExample: string;
   displayNameExample: string;
+}
+
+export type IntercomHostReadinessStatus = 'ok' | 'warning' | 'missing' | 'unknown';
+
+export interface IntercomHostReadinessCheck {
+  id: 'lan-host' | 'ssh-user' | 'agent' | 'ssh-listener' | 'firewall' | 'remote-command';
+  status: IntercomHostReadinessStatus;
+  title: string;
+  detail: string;
+}
+
+export interface IntercomHostReadiness {
+  ready: boolean;
+  platform: NodeJS.Platform;
+  canPrepare: boolean;
+  needsAdmin: boolean;
+  host: string;
+  sshUser: string | null;
+  sshPort: number;
+  agentId: string;
+  sessionId: string;
+  remoteCommand: string;
+  checks: IntercomHostReadinessCheck[];
+  prepareCommandPreview: string | null;
+}
+
+export interface IntercomHostPrepareResult {
+  success: boolean;
+  started: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+  status: IntercomHostReadiness;
 }
 
 export interface IntercomRouteInput {
@@ -104,6 +138,7 @@ const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
 const KTCLAW_LINUX_REMOTE_OPENCLAW_COMMAND = 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs';
+const DEFAULT_SSH_PORT = 22;
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -183,6 +218,27 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  const pathEnv = process.env.PATH || '';
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';')
+    : [''];
+  for (const directory of pathEnv.split(process.platform === 'win32' ? ';' : ':')) {
+    if (!directory) {
+      continue;
+    }
+    for (const extension of extensions) {
+      try {
+        await access(join(directory, `${command}${extension}`));
+        return true;
+      } catch {
+        // continue searching PATH
+      }
+    }
+  }
+  return false;
 }
 
 async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
@@ -349,13 +405,169 @@ function buildSelfConfig(
   return {
     host: shareHost,
     sshUser: getLocalSshUser(),
-    sshPort: 22,
+    sshPort: DEFAULT_SSH_PORT,
     agentId: agent.id,
     sessionId: getDefaultSessionId(config),
     remoteCommand: DEFAULT_REMOTE_OPENCLAW_COMMAND,
     routeIdExample: `${shareHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
     displayNameExample: `${hostname() || localHost} / ${agent.name || agent.id}`,
   };
+}
+
+function isShareableHost(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return Boolean(normalized)
+    && normalized !== 'local'
+    && normalized !== 'localhost'
+    && normalized !== '127.0.0.1'
+    && normalized !== '::1';
+}
+
+function isTcpPortListening(port: number, host = '127.0.0.1', timeoutMs = 650): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new Socket();
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      resolve(result);
+    };
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+function getWindowsPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+function encodePowerShellCommand(command: string): string {
+  return Buffer.from(command, 'utf16le').toString('base64');
+}
+
+function buildWindowsPrepareScript(): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'",
+    "if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' }",
+    "Set-Service -Name 'sshd' -StartupType Automatic",
+    "Start-Service -Name 'sshd'",
+    "$rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue",
+    "if ($rule) { Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' } else { New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }",
+  ].join('; ');
+}
+
+function buildLinuxPrepareScript(): string {
+  return [
+    'set -e',
+    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y openssh-server; elif command -v dnf >/dev/null 2>&1; then dnf install -y openssh-server; elif command -v yum >/dev/null 2>&1; then yum install -y openssh-server; elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm openssh; else echo 'No supported package manager found for automatic OpenSSH installation.' >&2; exit 2; fi",
+    "if command -v systemctl >/dev/null 2>&1; then systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd; fi",
+    "if command -v ufw >/dev/null 2>&1; then ufw allow 22/tcp || true; fi",
+    "if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --add-service=ssh --permanent || true; firewall-cmd --reload || true; fi",
+  ].join('; ');
+}
+
+function buildMacPrepareScript(): string {
+  return 'systemsetup -setremotelogin on';
+}
+
+function buildPrepareCommandPreview(platform: NodeJS.Platform): string | null {
+  if (platform === 'win32') {
+    return buildWindowsPrepareScript();
+  }
+  if (platform === 'linux') {
+    return buildLinuxPrepareScript();
+  }
+  if (platform === 'darwin') {
+    return buildMacPrepareScript();
+  }
+  return null;
+}
+
+async function buildPrepareInvocation(platform: NodeJS.Platform): Promise<{ command: string; args: string[] } | null> {
+  if (platform === 'win32') {
+    const encoded = encodePowerShellCommand(buildWindowsPrepareScript());
+    const launcher = `Start-Process -FilePath powershell.exe -Verb RunAs -Wait -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}')`;
+    return {
+      command: getWindowsPowerShellPath(),
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', launcher],
+    };
+  }
+  if (platform === 'linux') {
+    if (await commandExists('pkexec')) {
+      return {
+        command: 'pkexec',
+        args: ['sh', '-lc', buildLinuxPrepareScript()],
+      };
+    }
+    return {
+      command: 'sudo',
+      args: ['-n', 'sh', '-lc', buildLinuxPrepareScript()],
+    };
+  }
+  if (platform === 'darwin') {
+    return {
+      command: 'osascript',
+      args: ['-e', `do shell script ${JSON.stringify(buildMacPrepareScript())} with administrator privileges`],
+    };
+  }
+  return null;
+}
+
+function createReadinessCheck(
+  id: IntercomHostReadinessCheck['id'],
+  status: IntercomHostReadinessStatus,
+  title: string,
+  detail: string,
+): IntercomHostReadinessCheck {
+  return { id, status, title, detail };
+}
+
+async function runPrepareInvocation(invocation: { command: string; args: string[] }): Promise<{
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  error: string | null;
+}> {
+  return new Promise((resolve) => {
+    const child = spawn(invocation.command, invocation.args, {
+      env: process.env,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      resolve({
+        success: false,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: error.message,
+      });
+    });
+    child.on('close', (code) => {
+      resolve({
+        success: code === 0,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: code === 0 ? null : `Prepare command exited with code ${code ?? 'unknown'}`,
+      });
+    });
+  });
 }
 
 function normalizeStoredRoute(
@@ -830,6 +1042,102 @@ export async function getIntercomSnapshot(): Promise<IntercomSnapshot> {
     localAgents,
     selfConfig: buildSelfConfig(config, localAgents),
     routes: [...routesById.values()].sort((left, right) => left.id.localeCompare(right.id)),
+  };
+}
+
+export async function getIntercomHostReadiness(): Promise<IntercomHostReadiness> {
+  const snapshot = await getIntercomSnapshot();
+  const selfConfig = snapshot.selfConfig;
+  const platform = process.platform;
+  const sshListening = await isTcpPortListening(selfConfig.sshPort || DEFAULT_SSH_PORT);
+  const canPrepare = Boolean(await buildPrepareInvocation(platform));
+  const prepareCommandPreview = buildPrepareCommandPreview(platform);
+  const checks: IntercomHostReadinessCheck[] = [
+    createReadinessCheck(
+      'lan-host',
+      isShareableHost(selfConfig.host) ? 'ok' : 'missing',
+      'Shareable host/IP',
+      isShareableHost(selfConfig.host)
+        ? `Other machines can use ${selfConfig.host}.`
+        : 'No LAN/VPN address was detected. Connect to a network or use a tunnel before sharing this machine.',
+    ),
+    createReadinessCheck(
+      'ssh-user',
+      selfConfig.sshUser ? 'ok' : 'missing',
+      'SSH user',
+      selfConfig.sshUser
+        ? `Other machines should log in as ${selfConfig.sshUser}.`
+        : 'KTClaw could not detect the local OS user. Enter the SSH user manually on the other machine.',
+    ),
+    createReadinessCheck(
+      'agent',
+      selfConfig.agentId ? 'ok' : 'missing',
+      'Local agent',
+      selfConfig.agentId
+        ? `Default target agent is ${selfConfig.agentId}.`
+        : 'No local agent was detected. Create or enable an agent before sharing this machine.',
+    ),
+    createReadinessCheck(
+      'ssh-listener',
+      sshListening ? 'ok' : 'missing',
+      'SSH listener',
+      sshListening
+        ? `SSH is accepting local connections on port ${selfConfig.sshPort || DEFAULT_SSH_PORT}.`
+        : `No SSH listener was detected on port ${selfConfig.sshPort || DEFAULT_SSH_PORT}. Use Prepare this machine to install/start OpenSSH.`,
+    ),
+    createReadinessCheck(
+      'firewall',
+      sshListening ? 'warning' : 'unknown',
+      'Firewall',
+      sshListening
+        ? 'Local SSH is running. If another machine still cannot connect, allow SSH through the system firewall.'
+        : 'Firewall status can be verified after SSH is installed and running.',
+    ),
+    createReadinessCheck(
+      'remote-command',
+      selfConfig.remoteCommand ? 'ok' : 'missing',
+      'KTClaw command',
+      selfConfig.remoteCommand
+        ? 'KTClaw will provide the command that the other machine should use automatically.'
+        : 'No remote KTClaw command was detected.',
+    ),
+  ];
+  const blockingChecks = checks.filter((check) => check.status === 'missing');
+  return {
+    ready: blockingChecks.length === 0,
+    platform,
+    canPrepare,
+    needsAdmin: canPrepare,
+    host: selfConfig.host,
+    sshUser: selfConfig.sshUser,
+    sshPort: selfConfig.sshPort || DEFAULT_SSH_PORT,
+    agentId: selfConfig.agentId,
+    sessionId: selfConfig.sessionId,
+    remoteCommand: selfConfig.remoteCommand,
+    checks,
+    prepareCommandPreview,
+  };
+}
+
+export async function prepareIntercomHost(): Promise<IntercomHostPrepareResult> {
+  const invocation = await buildPrepareInvocation(process.platform);
+  if (!invocation) {
+    const status = await getIntercomHostReadiness();
+    return {
+      success: false,
+      started: false,
+      stdout: '',
+      stderr: '',
+      error: `Automatic host preparation is not supported on ${process.platform}.`,
+      status,
+    };
+  }
+
+  const result = await runPrepareInvocation(invocation);
+  return {
+    ...result,
+    started: true,
+    status: await getIntercomHostReadiness(),
   };
 }
 

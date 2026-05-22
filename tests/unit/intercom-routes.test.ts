@@ -8,6 +8,8 @@ const upsertIntercomRouteMock = vi.fn();
 const deleteIntercomRouteMock = vi.fn();
 const sendIntercomMessageMock = vi.fn();
 const installIntercomProtocolMock = vi.fn();
+const getIntercomHostReadinessMock = vi.fn();
+const prepareIntercomHostMock = vi.fn();
 
 vi.mock('@electron/api/route-utils', () => ({
   parseJsonBody: (...args: unknown[]) => parseJsonBodyMock(...args),
@@ -16,16 +18,19 @@ vi.mock('@electron/api/route-utils', () => ({
 
 vi.mock('@electron/services/intercom', () => ({
   getIntercomSnapshot: (...args: unknown[]) => getIntercomSnapshotMock(...args),
+  getIntercomHostReadiness: (...args: unknown[]) => getIntercomHostReadinessMock(...args),
   upsertIntercomRoute: (...args: unknown[]) => upsertIntercomRouteMock(...args),
   deleteIntercomRoute: (...args: unknown[]) => deleteIntercomRouteMock(...args),
   sendIntercomMessage: (...args: unknown[]) => sendIntercomMessageMock(...args),
   installIntercomProtocol: (...args: unknown[]) => installIntercomProtocolMock(...args),
+  prepareIntercomHost: (...args: unknown[]) => prepareIntercomHostMock(...args),
 }));
 
 describe('intercom routes', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     getIntercomSnapshotMock.mockResolvedValue({ routes: [] });
+    getIntercomHostReadinessMock.mockResolvedValue({ ready: true, checks: [] });
   });
 
   it('returns the intercom snapshot', async () => {
@@ -68,6 +73,45 @@ describe('intercom routes', () => {
     expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
       success: true,
       routes: [{ id: 'ops' }],
+    });
+  });
+
+  it('returns host readiness', async () => {
+    getIntercomHostReadinessMock.mockResolvedValue({ ready: false, checks: [{ id: 'ssh-listener' }] });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'GET' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/host-readiness'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      ready: false,
+      checks: [{ id: 'ssh-listener' }],
+    });
+  });
+
+  it('starts host preparation', async () => {
+    prepareIntercomHostMock.mockResolvedValue({ success: true, started: true, status: { ready: true } });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/prepare-host'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(prepareIntercomHostMock).toHaveBeenCalledWith();
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      started: true,
+      status: { ready: true },
     });
   });
 

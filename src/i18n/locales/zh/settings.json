@@ -564,6 +564,14 @@
       "selfTitle": "本机 KTClaw",
       "selfShareTitle": "别人连接本机时填写",
       "selfShareDescription": "把这些值发给另一台 KTClaw，对方就可以把本机添加成 SSH Intercom 路由。Host 会优先使用检测到的局域网 IP。",
+      "hostReady": "已准备",
+      "hostNeedsSetup": "需要准备",
+      "hostReadyDescription": "这台机器看起来已经可以被其他 KTClaw 连接。",
+      "hostNeedsSetupDescription": "这台机器还需要准备 SSH 或网络设置，其他机器才能连接。",
+      "hostPrepareAdminHint": "准备过程可能会弹出系统管理员授权，用于安装/启动 SSH 并放行防火墙。",
+      "hostPrepareNoAdminHint": "当前平台上的准备动作不需要管理员修改。",
+      "prepareHost": "准备这台机器",
+      "hostChecksLabel": "连接检查",
       "selfHostToShareLabel": "给别人填写的 SSH Host/IP",
       "selfSshUserLabel": "本机 SSH 用户",
       "selfRouteExampleLabel": "路由示例",
@@ -623,6 +631,8 @@
         "messageQueued": "Intercom 消息已投递",
         "messageDelivered": "Intercom 命令已完成（退出码 {{code}}）",
         "messageFailed": "发送 Intercom 消息失败",
+        "hostPrepared": "这台机器已准备好接收 Intercom 连接",
+        "hostPrepareFailed": "准备这台机器接收 Intercom 连接失败",
         "protocolInstalled": "Intercom SOP 已更新：{{updated}}，跳过：{{skipped}}",
         "protocolFailed": "注入 Intercom SOP 失败"
       }

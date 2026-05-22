@@ -1,5 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import {
+  AlertCircle,
+  CheckCircle2,
   ExternalLink,
   Loader2,
   MonitorCog,
@@ -40,10 +42,14 @@ export function SettingsRemoteInstancesPanel() {
   const localHost = useIntercomStore((state) => state.localHost);
   const defaultSessionId = useIntercomStore((state) => state.defaultSessionId);
   const selfConfig = useIntercomStore((state) => state.selfConfig);
+  const hostReadiness = useIntercomStore((state) => state.hostReadiness);
   const loading = useIntercomStore((state) => state.loading);
   const installingProtocol = useIntercomStore((state) => state.installingProtocol);
+  const preparingHost = useIntercomStore((state) => state.preparingHost);
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
+  const fetchHostReadiness = useIntercomStore((state) => state.fetchHostReadiness);
   const installProtocol = useIntercomStore((state) => state.installProtocol);
+  const prepareHost = useIntercomStore((state) => state.prepareHost);
 
   const sshRoutes = useMemo(
     () => routes.filter((route) => route.transport === 'ssh'),
@@ -54,6 +60,10 @@ export function SettingsRemoteInstancesPanel() {
     void fetchIntercom();
   }, [fetchIntercom]);
 
+  useEffect(() => {
+    void fetchHostReadiness();
+  }, [fetchHostReadiness]);
+
   const handleInstallProtocol = async () => {
     try {
       const result = await installProtocol();
@@ -63,6 +73,21 @@ export function SettingsRemoteInstancesPanel() {
       }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.protocolFailed'));
+    }
+  };
+
+  const handlePrepareHost = async () => {
+    try {
+      const result = await prepareHost();
+      if (result.success) {
+        toast.success(t('remoteInstances.intercom.toasts.hostPrepared'));
+      } else {
+        toast.error(result.error || t('remoteInstances.intercom.toasts.hostPrepareFailed'));
+      }
+      void fetchIntercom({ force: true });
+      void fetchHostReadiness();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.hostPrepareFailed'));
     }
   };
 
@@ -121,13 +146,74 @@ export function SettingsRemoteInstancesPanel() {
 
           <div className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
             <section className="rounded-lg border border-black/5 bg-[#f8fafc] px-4 py-4 dark:border-white/10 dark:bg-muted/40">
-              <div className="flex items-center gap-2">
-                <MonitorCog className="h-4 w-4 text-[#64748b] dark:text-muted-foreground" />
-                <h4 className="text-[13px] font-semibold text-[#0f172a] dark:text-foreground">
-                  {t('remoteInstances.intercom.selfTitle')}
-                </h4>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <MonitorCog className="h-4 w-4 text-[#64748b] dark:text-muted-foreground" />
+                  <h4 className="text-[13px] font-semibold text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.selfTitle')}
+                  </h4>
+                </div>
+                <Badge variant={hostReadiness?.ready ? 'success' : 'warning'}>
+                  {hostReadiness?.ready
+                    ? t('remoteInstances.intercom.hostReady')
+                    : t('remoteInstances.intercom.hostNeedsSetup')}
+                </Badge>
               </div>
               <div className="mt-4 space-y-3">
+                <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">
+                  <div className="flex items-start gap-2">
+                    {hostReadiness?.ready ? (
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-semibold text-[#0f172a] dark:text-foreground">
+                        {hostReadiness?.ready
+                          ? t('remoteInstances.intercom.hostReadyDescription')
+                          : t('remoteInstances.intercom.hostNeedsSetupDescription')}
+                      </p>
+                      <p className="mt-1 text-[11px] leading-5 text-[#64748b] dark:text-muted-foreground">
+                        {hostReadiness?.needsAdmin
+                          ? t('remoteInstances.intercom.hostPrepareAdminHint')
+                          : t('remoteInstances.intercom.hostPrepareNoAdminHint')}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={hostReadiness?.ready ? 'outline' : 'default'}
+                    className="mt-3 gap-2"
+                    onClick={() => void handlePrepareHost()}
+                    disabled={preparingHost || hostReadiness?.canPrepare === false}
+                  >
+                    {preparingHost ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                    {t('remoteInstances.intercom.prepareHost')}
+                  </Button>
+                </div>
+                {hostReadiness?.checks && hostReadiness.checks.length > 0 ? (
+                  <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
+                      {t('remoteInstances.intercom.hostChecksLabel')}
+                    </p>
+                    <div className="mt-2 space-y-2">
+                      {hostReadiness.checks.map((check) => (
+                        <div key={check.id} className="flex items-start gap-2 text-[11px] leading-5">
+                          {check.status === 'ok' ? (
+                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                          ) : (
+                            <AlertCircle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${check.status === 'warning' ? 'text-amber-600' : 'text-red-600'}`} />
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-medium text-[#0f172a] dark:text-foreground">{check.title}</p>
+                            <p className="text-[#64748b] dark:text-muted-foreground">{check.detail}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">
                   <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
                     {t('remoteInstances.intercom.localHostLabel')}
