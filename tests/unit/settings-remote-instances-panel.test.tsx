@@ -42,8 +42,8 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.openConsole': 'Open console',
         'remoteInstances.intercom.selfTitle': 'This KTClaw',
         'remoteInstances.intercom.selfShareTitle': 'Config others should enter',
-        'remoteInstances.intercom.selfShareDescription': 'Give these values to another KTClaw user so they can add this machine as an SSH Intercom route.',
-        'remoteInstances.intercom.selfHostToShareLabel': 'Host for others',
+        'remoteInstances.intercom.selfShareDescription': 'Give these values to another KTClaw user so they can add this machine as an SSH Intercom route. Host is the detected LAN IP when available.',
+        'remoteInstances.intercom.selfHostToShareLabel': 'SSH host/IP for others',
         'remoteInstances.intercom.selfSshUserLabel': 'SSH user on this machine',
         'remoteInstances.intercom.selfRouteExampleLabel': 'Route example',
         'remoteInstances.intercom.unknownSshUser': 'Fill manually',
@@ -74,13 +74,13 @@ const READY_INTERCOM_RESPONSE = {
   defaultSessionId: 'intercom',
   localAgents: [{ id: 'dev', name: 'Dev Agent' }],
   selfConfig: {
-    host: 'windows-dev',
+    host: '10.101.208.55',
     sshUser: 'tester',
     sshPort: 22,
     agentId: 'dev',
     sessionId: 'intercom',
     remoteCommand: 'openclaw',
-    routeIdExample: 'windows-dev-dev',
+    routeIdExample: '10.101.208.55-dev',
     displayNameExample: 'windows-dev / Dev Agent',
   },
   routes: [
@@ -136,14 +136,15 @@ describe('SettingsRemoteInstancesPanel', () => {
     expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
     expect(screen.getByText('This KTClaw')).toBeInTheDocument();
     expect(screen.getByText('Config others should enter')).toBeInTheDocument();
-    expect(screen.getByText('Host for others')).toBeInTheDocument();
+    expect(screen.getByText('SSH host/IP for others')).toBeInTheDocument();
     expect(screen.getByText('SSH user on this machine')).toBeInTheDocument();
     expect(screen.getByText('Route example')).toBeInTheDocument();
     expect(screen.getByText('Configured instances')).toBeInTheDocument();
     expect(screen.getAllByText('windows-dev').length).toBeGreaterThan(0);
+    expect(screen.getByText('10.101.208.55')).toBeInTheDocument();
     expect(screen.getByText('tester')).toBeInTheDocument();
-    expect(screen.getByText('ssh tester@windows-dev -p 22')).toBeInTheDocument();
-    expect(document.body.textContent).toContain('Route ID: windows-dev-dev');
+    expect(screen.getByText('ssh tester@10.101.208.55 -p 22')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('Route ID: 10.101.208.55-dev');
     expect(document.body.textContent).toContain('Display name: windows-dev / Dev Agent');
     expect(screen.getByText('Dev Agent')).toBeInTheDocument();
     expect(screen.getByText('Linux KTClaw')).toBeInTheDocument();

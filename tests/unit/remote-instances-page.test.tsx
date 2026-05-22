@@ -67,13 +67,13 @@ const READY_INTERCOM_RESPONSE = {
   defaultSessionId: 'intercom',
   localAgents: [{ id: 'dev', name: 'Dev Agent' }],
   selfConfig: {
-    host: 'windows-dev',
+    host: '10.101.208.55',
     sshUser: 'tester',
     sshPort: 22,
     agentId: 'dev',
     sessionId: 'intercom',
     remoteCommand: 'openclaw',
-    routeIdExample: 'windows-dev-dev',
+    routeIdExample: '10.101.208.55-dev',
     displayNameExample: 'windows-dev / Dev Agent',
   },
   routes: [

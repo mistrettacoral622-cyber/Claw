@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { hostname, userInfo } from 'node:os';
+import { hostname, networkInterfaces, userInfo, type NetworkInterfaceInfo } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { listAgentsSnapshot } from '../utils/agent-config';
@@ -127,6 +127,106 @@ function getDefaultSessionId(config: IntercomConfigDocument): string {
   return normalizeString(getStoredIntercomConfig(config).defaultSessionId) || DEFAULT_SESSION_ID;
 }
 
+function parseIpv4Octets(address: string): [number, number, number, number] | null {
+  const parts = address.split('.');
+  if (parts.length !== 4) {
+    return null;
+  }
+
+  const octets = parts.map((part) => Number(part));
+  return octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)
+    ? octets as [number, number, number, number]
+    : null;
+}
+
+function isPrivateLanIpv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
+    return false;
+  }
+
+  const [first, second] = octets;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}
+
+function isReservedOrVirtualIpv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
+    return true;
+  }
+
+  const [first, second] = octets;
+  return first === 0
+    || first === 127
+    || (first === 169 && second === 254)
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 198 && (second === 18 || second === 19))
+    || first >= 224;
+}
+
+function scoreInterfaceName(name: string): number {
+  const normalized = name.toLowerCase();
+  const virtualMarkers = [
+    'docker',
+    'hyper-v',
+    'loopback',
+    'meta',
+    'tailscale',
+    'utun',
+    'vbox',
+    'vethernet',
+    'virtual',
+    'vmware',
+    'wsl',
+    'zerotier',
+  ];
+  if (virtualMarkers.some((marker) => normalized.includes(marker))) {
+    return -50;
+  }
+
+  const preferredMarkers = ['ethernet', 'wi-fi', 'wifi', 'wlan', 'wireless'];
+  if (preferredMarkers.some((marker) => normalized.includes(marker))) {
+    return 20;
+  }
+
+  return /^(en|eth)\d*/.test(normalized) ? 10 : 0;
+}
+
+function scoreLanIpv4Candidate(name: string, address: string): number {
+  if (isReservedOrVirtualIpv4(address)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  return (isPrivateLanIpv4(address) ? 100 : 10) + scoreInterfaceName(name);
+}
+
+export function selectBestIntercomLanIpv4Address(interfaces: ReturnType<typeof networkInterfaces>): string | null {
+  const candidates: Array<{ address: string; score: number; index: number }> = [];
+  let index = 0;
+
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries ?? []) {
+      const info = entry as NetworkInterfaceInfo;
+      if (info.family === 'IPv4' && !info.internal && info.address) {
+        const score = scoreLanIpv4Candidate(name, info.address);
+        if (Number.isFinite(score)) {
+          candidates.push({ address: info.address, score, index });
+        }
+        index += 1;
+      }
+    }
+  }
+
+  candidates.sort((left, right) => right.score - left.score || left.index - right.index);
+  return candidates[0]?.address ?? null;
+}
+
+function getShareHostForSsh(config: IntercomConfigDocument): string {
+  return selectBestIntercomLanIpv4Address(networkInterfaces()) || getLocalHost(config);
+}
+
 function getLocalSshUser(): string | null {
   try {
     return normalizeString(userInfo().username) || null;
@@ -140,15 +240,16 @@ function buildSelfConfig(
   localAgents: Array<{ id: string; name: string }>,
 ): IntercomSelfConfig {
   const localHost = getLocalHost(config);
+  const shareHost = getShareHostForSsh(config);
   const agent = localAgents[0] ?? { id: 'main', name: 'Main' };
   return {
-    host: localHost,
+    host: shareHost,
     sshUser: getLocalSshUser(),
     sshPort: 22,
     agentId: agent.id,
     sessionId: getDefaultSessionId(config),
     remoteCommand: 'openclaw',
-    routeIdExample: `${localHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
+    routeIdExample: `${shareHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
     displayNameExample: `${hostname() || localHost} / ${agent.name || agent.id}`,
   };
 }

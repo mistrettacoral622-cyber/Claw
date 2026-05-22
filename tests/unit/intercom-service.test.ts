@@ -18,6 +18,12 @@ vi.mock('node:os', async () => {
   return {
     ...actual,
     hostname: () => 'desk-a',
+    networkInterfaces: () => ({
+      Loopback: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+      'vEthernet (WSL)': [{ family: 'IPv4', internal: false, address: '172.24.32.1' }],
+      'Wi-Fi': [{ family: 'IPv4', internal: false, address: '10.101.208.55' }],
+    }),
+    userInfo: () => ({ username: 'tester' }),
   };
 });
 
@@ -83,12 +89,13 @@ describe('intercom service', () => {
 
     expect(snapshot.localHost).toBe('desk-a');
     expect(snapshot.selfConfig).toEqual(expect.objectContaining({
-      host: 'desk-a',
+      host: '10.101.208.55',
+      sshUser: 'tester',
       sshPort: 22,
       agentId: 'main',
       sessionId: 'intercom',
       remoteCommand: 'openclaw',
-      routeIdExample: 'desk-a-main',
+      routeIdExample: '10.101.208.55-main',
     }));
     expect(snapshot.routes).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -104,6 +111,16 @@ describe('intercom service', () => {
         source: 'local',
       }),
     ]));
+  });
+
+  it('selects the best LAN IPv4 address for the host other machines should use', async () => {
+    const { selectBestIntercomLanIpv4Address } = await import('@electron/services/intercom');
+
+    expect(selectBestIntercomLanIpv4Address({
+      'vEthernet (Default Switch)': [{ family: 'IPv4', internal: false, address: '172.24.16.1' } as never],
+      Ethernet: [{ family: 'IPv4', internal: false, address: '192.168.1.45' } as never],
+      Tailscale: [{ family: 'IPv4', internal: false, address: '100.99.88.77' } as never],
+    })).toBe('192.168.1.45');
   });
 
   it('persists an SSH route under openclaw intercom agents', async () => {
