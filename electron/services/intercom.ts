@@ -93,6 +93,8 @@ interface IntercomConfigDocument extends OpenClawConfig {
 const DEFAULT_SESSION_ID = 'intercom';
 const ROUTE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const INTERCOM_PROTOCOL_MARKER = 'KTClaw Intercom Protocol';
+const SSH_CONNECT_TIMEOUT_SECONDS = 10;
+const INTERCOM_COMMAND_TIMEOUT_MS = 60_000;
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -382,6 +384,16 @@ function buildSshCommand(route: IntercomRoute, message: string, sessionId: strin
   return {
     command: 'ssh',
     args: [
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}`,
+      '-o',
+      'ConnectionAttempts=1',
+      '-o',
+      'NumberOfPasswordPrompts=0',
       ...(route.sshPort ? ['-p', String(route.sshPort)] : []),
       host,
       remoteCommand,
@@ -397,6 +409,7 @@ function runIntercomCommand(command: string, args: string[], options: {
 }): Promise<{ exitCode: number | null; stdout: string; stderr: string; durationMs: number }> {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
+    let completed = false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -407,6 +420,36 @@ function runIntercomCommand(command: string, args: string[], options: {
 
     let stdout = '';
     let stderr = '';
+    const finish = (callback: () => void) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const buildResult = (exitCode: number | null) => ({
+      exitCode,
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      durationMs: Date.now() - startedAt,
+    });
+    const timeout = setTimeout(() => {
+      const result = buildResult(null);
+      const message = `Intercom command timed out after ${Math.round(INTERCOM_COMMAND_TIMEOUT_MS / 1000)}s`;
+      const error = new Error(`${message}. Check SSH key authentication and whether the remote OpenClaw command exits.`);
+      Object.assign(error, {
+        ...result,
+        stderr: result.stderr || message,
+      });
+      logger.warn('Intercom command timed out', {
+        command,
+        durationMs: result.durationMs,
+      });
+      child.kill();
+      finish(() => reject(error));
+    }, INTERCOM_COMMAND_TIMEOUT_MS);
+
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
     });
@@ -418,23 +461,18 @@ function runIntercomCommand(command: string, args: string[], options: {
         command,
         error: String(error),
       });
-      reject(error);
+      finish(() => reject(error));
     });
     child.on('close', (exitCode) => {
-      const result = {
-        exitCode,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        durationMs: Date.now() - startedAt,
-      };
+      const result = buildResult(exitCode);
       if (exitCode && exitCode !== 0) {
         const details = result.stderr || result.stdout || `exit code ${exitCode}`;
         const error = new Error(`Intercom command failed: ${details}`);
         Object.assign(error, result);
-        reject(error);
+        finish(() => reject(error));
         return;
       }
-      resolve(result);
+      finish(() => resolve(result));
     });
   });
 }

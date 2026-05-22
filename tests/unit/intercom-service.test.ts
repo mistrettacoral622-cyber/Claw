@@ -14,6 +14,7 @@ function createProcessMock(options: {
   stderr?: string;
   exitCode?: number | null;
   error?: Error;
+  close?: boolean;
 } = {}) {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const stdoutListeners = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -30,24 +31,27 @@ function createProcessMock(options: {
     }
   };
 
-  setImmediate(() => {
-    if (options.error) {
-      emit(listeners, 'error', options.error);
-      return;
-    }
-    if (options.stdout) {
-      emit(stdoutListeners, 'data', Buffer.from(options.stdout));
-    }
-    if (options.stderr) {
-      emit(stderrListeners, 'data', Buffer.from(options.stderr));
-    }
-    emit(listeners, 'close', options.exitCode ?? 0);
-  });
+  if (options.close !== false) {
+    setImmediate(() => {
+      if (options.error) {
+        emit(listeners, 'error', options.error);
+        return;
+      }
+      if (options.stdout) {
+        emit(stdoutListeners, 'data', Buffer.from(options.stdout));
+      }
+      if (options.stderr) {
+        emit(stderrListeners, 'data', Buffer.from(options.stderr));
+      }
+      emit(listeners, 'close', options.exitCode ?? 0);
+    });
+  }
 
   return {
     stdout: { on: onFor(stdoutListeners) },
     stderr: { on: onFor(stderrListeners) },
     on: onFor(listeners),
+    kill: vi.fn(),
   };
 }
 
@@ -226,6 +230,16 @@ describe('intercom service', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       'ssh',
       [
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'StrictHostKeyChecking=accept-new',
+        '-o',
+        'ConnectTimeout=10',
+        '-o',
+        'ConnectionAttempts=1',
+        '-o',
+        'NumberOfPasswordPrompts=0',
         '-p',
         '2222',
         'ubuntu@srv-c',
@@ -238,7 +252,44 @@ describe('intercom service', () => {
       }),
     );
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs[3]).toContain('[from agent dev] 更新头像');
+    expect(sshArgs.at(-1)).toContain('[from agent dev] 更新头像');
+  });
+
+  it('times out intercom commands that never exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = createProcessMock({ close: false });
+      spawnMock.mockReturnValueOnce(child);
+      configStore.current = {
+        intercom: {
+          agents: {
+            ops: {
+              host: 'srv-c',
+              agent: 'ops',
+              transport: 'ssh',
+              sshUser: 'ubuntu',
+            },
+          },
+        },
+      };
+      const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+      const sendPromise = expect(sendIntercomMessage({
+        sender: 'dev',
+        target: 'ops',
+        message: 'ping',
+      })).rejects.toMatchObject({
+        message: expect.stringContaining('timed out'),
+        exitCode: null,
+        stderr: expect.stringContaining('timed out'),
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await sendPromise;
+      expect(child.kill).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects SSH intercom messages when the remote command exits non-zero', async () => {
