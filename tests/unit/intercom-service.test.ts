@@ -420,6 +420,43 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
   });
 
+  it('retries legacy openclaw routes with the bundled Linux KTClaw command when the wrapper points at /usr/ktclaw', async () => {
+    spawnMock
+      .mockReturnValueOnce(createProcessMock({
+        stderr: 'Error: KTClaw executable not found at /usr/ktclaw\nPlease reinstall KTClaw or remove this script: /usr/local/bin/openclaw',
+        exitCode: 1,
+      }))
+      .mockReturnValueOnce(createProcessMock({ stdout: '{"ok":true}\n' }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      stdout: '{"ok":true}',
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const retryArgs = spawnMock.mock.calls[1][1] as string[];
+    expect(retryArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
+  });
+
   it('sends password-backed SSH intercom messages through ssh2', async () => {
     secretStore.set('intercom:ssh:ops', {
       type: 'local',

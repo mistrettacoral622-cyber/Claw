@@ -16,6 +16,8 @@ export type IntercomRouteDraft = {
 
 export const DEFAULT_INTERCOM_SESSION_ID = 'intercom';
 export const DEFAULT_INTERCOM_ROUTE_ID = 'linux-ktclaw';
+export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND =
+  'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs';
 
 export function emptyIntercomRouteDraft(): IntercomRouteDraft {
   return {
@@ -29,7 +31,7 @@ export function emptyIntercomRouteDraft(): IntercomRouteDraft {
     sshPasswordConfigured: false,
     agent: 'main',
     sessionId: DEFAULT_INTERCOM_SESSION_ID,
-    remoteCommand: 'openclaw',
+    remoteCommand: DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
   };
 }
 
@@ -49,7 +51,7 @@ export function deriveIntercomRouteDraft(route: IntercomRoute | null): IntercomR
     sshPasswordConfigured: route.sshPasswordConfigured,
     agent: route.agent,
     sessionId: route.sessionId || DEFAULT_INTERCOM_SESSION_ID,
-    remoteCommand: route.remoteCommand || 'openclaw',
+    remoteCommand: route.remoteCommand || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
   };
 }
 
@@ -71,7 +73,7 @@ export function buildSshPreview(route: IntercomRouteDraft, message: string, send
   const host = route.sshUser.trim()
     ? `${route.sshUser.trim()}@${route.host.trim() || '<linux-host>'}`
     : route.host.trim() || '<linux-host>';
-  const command = route.remoteCommand.trim() || 'openclaw';
+  const command = route.remoteCommand.trim() || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND;
   const agent = route.agent.trim() || '<agent>';
   const session = route.sessionId.trim() || DEFAULT_INTERCOM_SESSION_ID;
   const text = message.trim() || '<message>';

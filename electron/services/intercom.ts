@@ -102,6 +102,8 @@ const SSH_CONNECT_TIMEOUT_SECONDS = 10;
 const INTERCOM_COMMAND_TIMEOUT_MS = 60_000;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
+const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
+const KTCLAW_LINUX_REMOTE_OPENCLAW_COMMAND = 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs';
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -350,7 +352,7 @@ function buildSelfConfig(
     sshPort: 22,
     agentId: agent.id,
     sessionId: getDefaultSessionId(config),
-    remoteCommand: 'openclaw',
+    remoteCommand: DEFAULT_REMOTE_OPENCLAW_COMMAND,
     routeIdExample: `${shareHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
     displayNameExample: `${hostname() || localHost} / ${agent.name || agent.id}`,
   };
@@ -537,11 +539,32 @@ function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: st
     message,
     '--json',
   ];
-  const commandParts = splitPosixCommand(route.remoteCommand || 'openclaw');
+  const commandParts = splitPosixCommand(route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND);
   const remoteCommandPrefix = commandParts.length > 0
     ? commandParts.map(quoteRemoteCommandPart).join(' ')
-    : quotePosix('openclaw');
+    : quotePosix(DEFAULT_REMOTE_OPENCLAW_COMMAND);
   return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
+}
+
+function shouldRetryWithBundledLinuxOpenClaw(route: IntercomRoute, error: unknown): boolean {
+  if (route.transport !== 'ssh') {
+    return false;
+  }
+  if ((route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND) !== DEFAULT_REMOTE_OPENCLAW_COMMAND) {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const stderr = typeof (error as { stderr?: unknown }).stderr === 'string'
+    ? (error as { stderr: string }).stderr
+    : '';
+  return `${message}\n${stderr}`.includes('KTClaw executable not found at /usr/ktclaw');
+}
+
+function withBundledLinuxOpenClawCommand(route: IntercomRoute): IntercomRoute {
+  return {
+    ...route,
+    remoteCommand: KTCLAW_LINUX_REMOTE_OPENCLAW_COMMAND,
+  };
 }
 
 function buildSshCommand(route: IntercomRoute, message: string, sessionId: string) {
@@ -858,23 +881,44 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
   const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
   const finalMessage = buildCallerMessage(sender, message);
   const sshPassword = route.transport === 'ssh' ? await getIntercomSshPassword(route.id) : null;
-  const invocation = route.transport === 'ssh' && sshPassword
+  const buildInvocation = (targetRoute: IntercomRoute) => targetRoute.transport === 'ssh' && sshPassword
     ? {
         command: 'ssh2',
         args: [
-          `${resolveSshHostAndUsername(route).username || userInfo().username}@${resolveSshHostAndUsername(route).host}`,
-          buildRemoteCommand(route, finalMessage, sessionId),
+          `${resolveSshHostAndUsername(targetRoute).username || userInfo().username}@${resolveSshHostAndUsername(targetRoute).host}`,
+          buildRemoteCommand(targetRoute, finalMessage, sessionId),
         ],
       }
-    : route.transport === 'ssh'
-      ? buildSshCommand(route, finalMessage, sessionId)
-      : buildLocalCommand(route, finalMessage, sessionId);
-  const commandResult = route.transport === 'ssh' && sshPassword
-    ? await runSsh2Command(route, sshPassword, finalMessage, sessionId)
-    : await runIntercomCommand(invocation.command, invocation.args, {
-        cwd: 'cwd' in invocation ? invocation.cwd : undefined,
-        env: 'env' in invocation ? invocation.env : process.env,
-      });
+    : targetRoute.transport === 'ssh'
+      ? buildSshCommand(targetRoute, finalMessage, sessionId)
+      : buildLocalCommand(targetRoute, finalMessage, sessionId);
+  const runInvocation = async (targetRoute: IntercomRoute, invocationToRun: ReturnType<typeof buildInvocation>) => (
+    targetRoute.transport === 'ssh' && sshPassword
+      ? runSsh2Command(targetRoute, sshPassword, finalMessage, sessionId)
+      : runIntercomCommand(invocationToRun.command, invocationToRun.args, {
+          cwd: 'cwd' in invocationToRun ? invocationToRun.cwd : undefined,
+          env: 'env' in invocationToRun ? invocationToRun.env : process.env,
+        })
+  );
+
+  let executedRoute = route;
+  let invocation = buildInvocation(executedRoute);
+  let commandResult: Awaited<ReturnType<typeof runIntercomCommand>>;
+  try {
+    commandResult = await runInvocation(executedRoute, invocation);
+  } catch (error) {
+    if (!shouldRetryWithBundledLinuxOpenClaw(executedRoute, error)) {
+      throw error;
+    }
+    logger.warn('Retrying intercom command with bundled Linux KTClaw OpenClaw entry', {
+      target,
+      host: route.host,
+      agent: route.agent,
+    });
+    executedRoute = withBundledLinuxOpenClawCommand(route);
+    invocation = buildInvocation(executedRoute);
+    commandResult = await runInvocation(executedRoute, invocation);
+  }
 
   return {
     success: true,

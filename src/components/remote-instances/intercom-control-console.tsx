@@ -35,6 +35,7 @@ import {
 } from '@/stores/intercom';
 import {
   buildSshPreview,
+  DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
   DEFAULT_INTERCOM_ROUTE_ID,
   DEFAULT_INTERCOM_SESSION_ID,
   deriveIntercomRouteDraft,
@@ -154,7 +155,7 @@ export function IntercomControlConsole() {
         sshPort: normalizeIntercomPort(routeDraft.sshPort),
         sshPassword: routeDraft.sshPassword || undefined,
         clearSshPassword: routeDraft.clearSshPassword,
-        remoteCommand: routeDraft.remoteCommand.trim() || 'openclaw',
+        remoteCommand: routeDraft.remoteCommand.trim() || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
       });
       setSelectedRouteId(nextId);
       setConfigOpen(false);
@@ -590,7 +591,7 @@ export function IntercomControlConsole() {
               </span>
               <Input
                 aria-label="Remote OpenClaw command"
-                placeholder="openclaw"
+                placeholder={DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND}
                 value={routeDraft.remoteCommand}
                 onChange={(event) => setRouteDraft((current) => ({ ...current, remoteCommand: event.target.value }))}
               />
