@@ -118,6 +118,9 @@ function readContentText(value: unknown): string {
         if (typeof entry === 'string') {
           return entry.trim();
         }
+        if (isRecord(entry) && typeof entry.text === 'string') {
+          return entry.text.trim();
+        }
         if (isRecord(entry) && entry.type === 'text' && typeof entry.text === 'string') {
           return entry.text.trim();
         }

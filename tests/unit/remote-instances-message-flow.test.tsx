@@ -155,7 +155,12 @@ describe('RemoteInstances message flow', () => {
             messages: [
               {
                 role: 'assistant',
-                content: 'Remote agent received the plan.',
+                content: [
+                  {
+                    text: 'Remote agent received the plan.',
+                    mediaUrl: null,
+                  },
+                ],
               },
             ],
           }),
