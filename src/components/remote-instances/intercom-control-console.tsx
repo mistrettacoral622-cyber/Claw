@@ -560,12 +560,12 @@ export function IntercomControlConsole() {
 
           <footer className="shrink-0 border-t border-black/[0.06] bg-white px-5 pb-5 pt-4 dark:border-white/10 dark:bg-card">
             <div className="mx-auto max-w-[960px]">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <label className="flex min-w-[220px] items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
-                  <span>{t('remoteInstances.intercom.senderLabel')}</span>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <label className="inline-flex h-9 max-w-full shrink-0 items-center gap-2 rounded-full border border-black/10 bg-[#f8fafc] px-3 text-[12px] text-[#64748b] dark:border-white/10 dark:bg-background dark:text-muted-foreground">
+                  <span className="shrink-0 whitespace-nowrap">{t('remoteInstances.intercom.senderLabel')}</span>
                   <Select
                     aria-label="Sender agent"
-                    className="h-8 min-w-[150px] rounded-full bg-[#f8fafc] py-1 text-[12px] dark:bg-background"
+                    className="h-7 w-[150px] min-w-0 rounded-full border-0 bg-transparent py-1 pl-2 pr-8 text-[12px] font-medium text-[#0f172a] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-foreground"
                     value={messageDraft.sender}
                     onChange={(event) => setMessageDraft((current) => ({ ...current, sender: event.target.value }))}
                   >
