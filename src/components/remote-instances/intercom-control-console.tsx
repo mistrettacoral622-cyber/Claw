@@ -43,7 +43,7 @@ import {
   DEFAULT_INTERCOM_SESSION_ID,
   deriveIntercomRouteDraft,
   emptyIntercomRouteDraft,
-  extractIntercomReplyText,
+  extractIntercomReplyMessages,
   normalizeIntercomPort,
   type IntercomRouteDraft,
 } from './intercom-ui-utils';
@@ -104,15 +104,19 @@ function createRunDetail(result: IntercomSendResult, id: string, commandPreview:
   };
 }
 
-function buildAssistantReply(result: IntercomSendResult): string {
-  const parsedReply = extractIntercomReplyText(result.stdout);
-  if (parsedReply) {
-    return parsedReply;
+function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): RawMessage[] {
+  const messages = extractIntercomReplyMessages(result.stdout);
+  if (messages.length > 0) {
+    return messages.map((message, index) => ({
+      ...message,
+      id: message.id || `${idPrefix}-assistant-${index}`,
+      role: message.role === 'user' ? 'assistant' : message.role,
+    }));
   }
   if (result.exitCode && result.exitCode !== 0 && result.stderr.trim()) {
-    return result.stderr.trim();
+    return [createIntercomMessage('assistant', result.stderr.trim(), `${idPrefix}-assistant-error`)];
   }
-  return `Command completed with exit code ${result.exitCode ?? 0}. Raw output is available in run details.`;
+  return [createIntercomMessage('assistant', `Command completed with exit code ${result.exitCode ?? 0}. Raw output is available in run details.`, `${idPrefix}-assistant`)];
 }
 
 export function IntercomControlConsole() {
@@ -280,7 +284,7 @@ export function IntercomControlConsole() {
           [routeId]: {
             messages: [
               ...conversation.messages,
-              createIntercomMessage('assistant', buildAssistantReply(result), `${messageId}-assistant`),
+              ...buildAssistantMessages(result, messageId),
             ],
             runs: [
               ...conversation.runs,

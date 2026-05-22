@@ -1,4 +1,5 @@
 import type { IntercomRoute } from '@/stores/intercom';
+import type { RawMessage } from '@/stores/chat';
 
 export type IntercomRouteDraft = {
   id: string;
@@ -175,6 +176,82 @@ function collectAssistantTexts(value: unknown, texts: string[], seen = new Set<u
   }
 }
 
+function normalizeRawMessage(value: unknown): RawMessage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const role = value.role === 'user' || value.role === 'assistant' || value.role === 'system' || value.role === 'toolresult'
+    ? value.role
+    : null;
+  if (!role) {
+    return null;
+  }
+  const content = normalizeRawMessageContent(value.content ?? value.message ?? value.text);
+  if (content == null) {
+    return null;
+  }
+  return {
+    ...value,
+    role,
+    content,
+    id: typeof value.id === 'string' ? value.id : undefined,
+    timestamp: typeof value.timestamp === 'number' ? value.timestamp : undefined,
+  } as RawMessage;
+}
+
+function normalizeRawMessageContent(content: unknown): unknown {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content.map((entry) => {
+      if (typeof entry === 'string') {
+        return { type: 'text', text: entry };
+      }
+      if (!isRecord(entry)) {
+        return entry;
+      }
+      if (typeof entry.text === 'string' && (entry.type == null || entry.type === 'output_text')) {
+        return {
+          ...entry,
+          type: 'text',
+        };
+      }
+      return entry;
+    });
+  }
+  const text = readContentText(content);
+  return text || content;
+}
+
+function collectRawMessages(value: unknown, messages: RawMessage[], seen = new Set<unknown>(), depth = 0): void {
+  if (depth > 8 || value === null || typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectRawMessages(entry, messages, seen, depth + 1);
+    }
+    return;
+  }
+
+  const message = normalizeRawMessage(value);
+  if (message) {
+    messages.push(message);
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  for (const key of ['messages', 'history', 'items', 'result', 'data']) {
+    collectRawMessages(value[key], messages, seen, depth + 1);
+  }
+}
+
 function findPreferredOutputText(value: unknown, depth = 0): string {
   if (depth > 4) {
     return '';
@@ -240,4 +317,29 @@ export function extractIntercomReplyText(stdout: string): string {
     return cleaned;
   }
   return `${cleaned.slice(0, 4000).trim()}\n...`;
+}
+
+export function extractIntercomReplyMessages(stdout: string): RawMessage[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const parsed = parseIntercomJson(trimmed);
+  if (parsed !== null) {
+    const rawMessages: RawMessage[] = [];
+    collectRawMessages(parsed, rawMessages);
+    if (rawMessages.length > 0) {
+      return rawMessages;
+    }
+
+    const text = findPreferredOutputText(parsed).trim();
+    if (text) {
+      return [{ role: 'assistant', content: text }];
+    }
+    return [];
+  }
+
+  const text = extractIntercomReplyText(trimmed);
+  return text ? [{ role: 'assistant', content: text }] : [];
 }

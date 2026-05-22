@@ -107,6 +107,15 @@ const READY_INTERCOM_RESPONSE = {
   ],
 };
 
+let remoteStdout = JSON.stringify({
+  content: [
+    {
+      text: 'Remote agent received the plan.',
+      mediaUrl: null,
+    },
+  ],
+});
+
 function resetIntercomStore() {
   useIntercomStore.setState({
     routes: [],
@@ -134,6 +143,14 @@ describe('RemoteInstances message flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetIntercomStore();
+    remoteStdout = JSON.stringify({
+      content: [
+        {
+          text: 'Remote agent received the plan.',
+          mediaUrl: null,
+        },
+      ],
+    });
     vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === '/api/intercom' && (!init || init.method === undefined)) {
         return READY_INTERCOM_RESPONSE;
@@ -151,14 +168,7 @@ describe('RemoteInstances message flow', () => {
           command: 'ssh',
           args: [],
           exitCode: 0,
-          stdout: JSON.stringify({
-            content: [
-              {
-                text: 'Remote agent received the plan.',
-                mediaUrl: null,
-              },
-            ],
-          }),
+          stdout: remoteStdout,
           stderr: '',
           durationMs: 123,
         };
@@ -193,7 +203,37 @@ describe('RemoteInstances message flow', () => {
     });
     expect(await screen.findByText('Plan the next step')).toBeInTheDocument();
     expect(screen.getByText('Remote agent received the plan.')).toBeInTheDocument();
+    expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
     expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument();
     expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
+  });
+
+  it('renders returned OpenClaw messages with the normal chat bubble renderer', async () => {
+    remoteStdout = JSON.stringify({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              text: '我是 **KTClaw**，Linux 侧已经收到。'
+            },
+          ],
+        },
+      ],
+      meta: { durationMs: 15744 },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: '测试 Linux ktclaw 回复' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('测试 Linux ktclaw 回复')).toBeInTheDocument();
+    expect(screen.getByText(/我是/)).toBeInTheDocument();
+    expect(screen.queryByText(/"messages"/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
   });
 });
