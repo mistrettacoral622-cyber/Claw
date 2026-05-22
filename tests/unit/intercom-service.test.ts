@@ -530,7 +530,7 @@ describe('intercom service', () => {
         exitCode: null,
         stderr: expect.stringContaining('timed out'),
       });
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(300_000);
 
       await sendPromise;
       expect(child.kill).toHaveBeenCalled();
