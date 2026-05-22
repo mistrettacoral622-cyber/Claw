@@ -81,3 +81,159 @@ export function buildSshPreview(route: IntercomRouteDraft, message: string, send
 
   return `ssh ${host} "${command} agent --agent ${agent} --session-id ${session} --message '[from agent ${from}] ${text}' --json"`;
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseIntercomJson(value: string): unknown | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function readContentText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry.trim();
+        }
+        if (isRecord(entry) && entry.type === 'text' && typeof entry.text === 'string') {
+          return entry.text.trim();
+        }
+        if (isRecord(entry) && typeof entry.content === 'string') {
+          return entry.content.trim();
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
+  if (isRecord(value)) {
+    if (typeof value.text === 'string') {
+      return value.text.trim();
+    }
+    if (typeof value.content === 'string') {
+      return value.content.trim();
+    }
+  }
+  return '';
+}
+
+function collectAssistantTexts(value: unknown, texts: string[], seen = new Set<unknown>(), depth = 0): void {
+  if (depth > 8 || value === null || typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectAssistantTexts(entry, texts, seen, depth + 1);
+    }
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  const role = typeof value.role === 'string' ? value.role.toLowerCase() : '';
+  if (role === 'assistant') {
+    const text = readContentText(value.content ?? value.message ?? value.text);
+    if (text) {
+      texts.push(text);
+    }
+  }
+
+  for (const entry of Object.values(value)) {
+    collectAssistantTexts(entry, texts, seen, depth + 1);
+  }
+}
+
+function findPreferredOutputText(value: unknown, depth = 0): string {
+  if (depth > 4) {
+    return '';
+  }
+  const text = readContentText(value);
+  if (text && depth > 0) {
+    return text;
+  }
+  if (!isRecord(value)) {
+    return '';
+  }
+
+  for (const key of ['response', 'reply', 'answer', 'output', 'text']) {
+    const direct = readContentText(value[key]);
+    if (direct) {
+      return direct;
+    }
+  }
+
+  for (const key of ['result', 'data', 'message']) {
+    const nested = findPreferredOutputText(value[key], depth + 1);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return '';
+}
+
+function stripNoisyIntercomLines(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\[plugins]\s+/i.test(line))
+    .join('\n')
+    .trim();
+}
+
+export function extractIntercomReplyText(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const parsed = parseIntercomJson(trimmed);
+  if (parsed !== null) {
+    const assistantTexts: string[] = [];
+    collectAssistantTexts(parsed, assistantTexts);
+    const assistantText = assistantTexts.at(-1)?.trim();
+    if (assistantText) {
+      return assistantText;
+    }
+
+    const preferred = findPreferredOutputText(parsed).trim();
+    if (preferred) {
+      return preferred;
+    }
+
+    return trimmed.length <= 2000 ? trimmed : '';
+  }
+
+  const cleaned = stripNoisyIntercomLines(trimmed);
+  if (cleaned.length <= 4000) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, 4000).trim()}\n...`;
+}

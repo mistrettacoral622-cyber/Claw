@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   CheckCircle2,
   CircleDot,
+  ChevronDown,
   Loader2,
   MessageSquareText,
   Plus,
   RefreshCcw,
   Save,
-  Send,
+  SendHorizontal,
   Server,
   Settings2,
   Shield,
-  Terminal,
   Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
+import { ChatMessage } from '@/pages/Chat/ChatMessage';
 import {
   Sheet,
   SheetContent,
@@ -29,8 +30,10 @@ import {
 } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/lib/toast';
+import type { RawMessage } from '@/stores/chat';
 import {
   useIntercomStore,
+  type IntercomSendResult,
   type IntercomRoute,
 } from '@/stores/intercom';
 import {
@@ -40,6 +43,7 @@ import {
   DEFAULT_INTERCOM_SESSION_ID,
   deriveIntercomRouteDraft,
   emptyIntercomRouteDraft,
+  extractIntercomReplyText,
   normalizeIntercomPort,
   type IntercomRouteDraft,
 } from './intercom-ui-utils';
@@ -47,6 +51,22 @@ import {
 type MessageDraft = {
   sender: string;
   message: string;
+};
+
+type IntercomRunDetail = {
+  id: string;
+  target: string;
+  agent: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  commandPreview: string;
+  stderr: string;
+  stdout: string;
+};
+
+type IntercomConversation = {
+  messages: RawMessage[];
+  runs: IntercomRunDetail[];
 };
 
 function routeAddress(route: IntercomRoute): string {
@@ -63,6 +83,38 @@ function routeTransportLabel(route: IntercomRoute): string {
   return 'Local';
 }
 
+function createIntercomMessage(role: RawMessage['role'], content: string, id: string): RawMessage {
+  return {
+    id,
+    role,
+    content,
+  };
+}
+
+function createRunDetail(result: IntercomSendResult, id: string, commandPreview: string): IntercomRunDetail {
+  return {
+    id,
+    target: result.target,
+    agent: result.agent,
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+    commandPreview,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
+function buildAssistantReply(result: IntercomSendResult): string {
+  const parsedReply = extractIntercomReplyText(result.stdout);
+  if (parsedReply) {
+    return parsedReply;
+  }
+  if (result.exitCode && result.exitCode !== 0 && result.stderr.trim()) {
+    return result.stderr.trim();
+  }
+  return `Command completed with exit code ${result.exitCode ?? 0}. Raw output is available in run details.`;
+}
+
 export function IntercomControlConsole() {
   const { t } = useTranslation('settings');
   const routes = useIntercomStore((state) => state.routes);
@@ -71,8 +123,6 @@ export function IntercomControlConsole() {
   const saving = useIntercomStore((state) => state.saving);
   const sending = useIntercomStore((state) => state.sending);
   const installingProtocol = useIntercomStore((state) => state.installingProtocol);
-  const error = useIntercomStore((state) => state.error);
-  const lastSendResult = useIntercomStore((state) => state.lastSendResult);
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
   const upsertRoute = useIntercomStore((state) => state.upsertRoute);
   const sendMessage = useIntercomStore((state) => state.sendMessage);
@@ -91,10 +141,17 @@ export function IntercomControlConsole() {
     sender: '',
     message: '',
   });
+  const [conversations, setConversations] = useState<Record<string, IntercomConversation>>({});
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const messageSeqRef = useRef(0);
 
   const selectedRoute = sshRoutes.find((route) => route.id === selectedRouteId) ?? null;
   const previewDraft = selectedRoute ? deriveIntercomRouteDraft(selectedRoute) : routeDraft;
-  const sshPreview = buildSshPreview(previewDraft, messageDraft.message, messageDraft.sender);
+  const selectedConversation = selectedRouteId ? conversations[selectedRouteId] : undefined;
+  const conversationMessages = selectedConversation?.messages ?? [];
+  const runDetails = selectedConversation?.runs ?? [];
+  const latestRun = runDetails.at(-1) ?? null;
 
   useEffect(() => {
     void fetchIntercom();
@@ -117,6 +174,21 @@ export function IntercomControlConsole() {
         : localAgents[0]?.id || current.sender || 'main',
     }));
   }, [localAgents]);
+
+  useEffect(() => {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement) {
+      return;
+    }
+    if (typeof scrollElement.scrollTo === 'function') {
+      scrollElement.scrollTo({
+        top: scrollElement.scrollHeight,
+        behavior: 'smooth',
+      });
+      return;
+    }
+    scrollElement.scrollTop = scrollElement.scrollHeight;
+  }, [conversationMessages.length, sending, selectedRouteId]);
 
   const canSaveRoute =
     !saving &&
@@ -170,20 +242,82 @@ export function IntercomControlConsole() {
       toast.error(t('remoteInstances.intercom.routeNeedsSave'));
       return;
     }
+    const text = messageDraft.message.trim();
+    if (!text) {
+      return;
+    }
+
+    const routeId = selectedRoute.id;
+    messageSeqRef.current += 1;
+    const messageId = `${routeId}-${messageSeqRef.current}`;
+    const commandPreview = buildSshPreview(previewDraft, text, messageDraft.sender.trim());
+    setConversations((current) => {
+      const conversation = current[routeId] ?? { messages: [], runs: [] };
+      return {
+        ...current,
+        [routeId]: {
+          ...conversation,
+          messages: [
+            ...conversation.messages,
+            createIntercomMessage('user', text, `${messageId}-user`),
+          ],
+        },
+      };
+    });
+    setMessageDraft((current) => ({ ...current, message: '' }));
 
     try {
       const result = await sendMessage({
         sender: messageDraft.sender.trim(),
-        target: selectedRoute.id,
-        message: messageDraft.message.trim(),
+        target: routeId,
+        message: text,
         sessionId: selectedRoute.sessionId || DEFAULT_INTERCOM_SESSION_ID,
       });
-      setMessageDraft((current) => ({ ...current, message: '' }));
+      setConversations((current) => {
+        const conversation = current[routeId] ?? { messages: [], runs: [] };
+        return {
+          ...current,
+          [routeId]: {
+            messages: [
+              ...conversation.messages,
+              createIntercomMessage('assistant', buildAssistantReply(result), `${messageId}-assistant`),
+            ],
+            runs: [
+              ...conversation.runs,
+              createRunDetail(result, `${messageId}-run`, commandPreview),
+            ],
+          },
+        };
+      });
       toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
         code: result.exitCode ?? 0,
       }));
     } catch (error) {
+      const message = error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed');
+      setConversations((current) => {
+        const conversation = current[routeId] ?? { messages: [], runs: [] };
+        return {
+          ...current,
+          [routeId]: {
+            ...conversation,
+            messages: [
+              ...conversation.messages,
+              createIntercomMessage('assistant', message, `${messageId}-error`),
+            ],
+          },
+        };
+      });
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed'));
+    }
+  };
+
+  const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    if (canSend) {
+      void handleSendMessage();
     }
   };
 
@@ -342,132 +476,149 @@ export function IntercomControlConsole() {
             </p>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-2">
-                <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                  {t('remoteInstances.intercom.senderLabel')}
-                </span>
-                <Select
-                  aria-label="Sender agent"
-                  value={messageDraft.sender}
-                  onChange={(event) => setMessageDraft((current) => ({ ...current, sender: event.target.value }))}
-                >
-                  {localAgents.length === 0 ? <option value="main">main</option> : null}
-                  {localAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name || agent.id}
-                    </option>
-                  ))}
-                </Select>
-              </label>
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto bg-[#fafafc] px-6 py-5 dark:bg-background">
+            <div className="mx-auto flex min-h-full max-w-[960px] flex-col gap-4">
+              {conversationMessages.length === 0 ? (
+                <div className="flex min-h-[320px] flex-1 items-center justify-center">
+                  <div className="max-w-sm text-center">
+                    <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-[#64748b] shadow-[0_1px_2px_rgba(0,0,0,0.05)] dark:bg-card dark:text-muted-foreground">
+                      <MessageSquareText className="h-5 w-5" />
+                    </div>
+                    <p className="mt-3 text-[13px] font-medium text-[#0f172a] dark:text-foreground">
+                      {selectedRoute
+                        ? `${selectedRoute.displayName || selectedRoute.id} / ${selectedRoute.agent}`
+                        : t('remoteInstances.intercom.chatNeedsRoute')}
+                    </p>
+                    <p className="mt-1 text-[12px] text-[#64748b] dark:text-muted-foreground">
+                      {selectedRoute ? routeAddress(selectedRoute) : t('remoteInstances.intercom.routeNeedsSave')}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                conversationMessages.map((message) => (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    showThinking={false}
+                  />
+                ))
+              )}
 
-              <div className="space-y-2">
-                <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
-                  {t('remoteInstances.intercom.targetLabel')}
-                </span>
-                <div className="flex h-10 items-center rounded-md border border-input bg-background px-3 text-sm text-[#0f172a] dark:text-foreground">
+              {sending ? (
+                <ChatMessage
+                  message={{
+                    id: `${selectedRouteId || 'route'}-pending`,
+                    role: 'assistant',
+                    content: t('remoteInstances.intercom.readyToSend'),
+                  }}
+                  showThinking={false}
+                  isStreaming
+                />
+              ) : null}
+
+              {latestRun ? (
+                <div className="ml-11 rounded-xl border border-black/[0.06] bg-white/80 px-3 py-2 text-[11px] text-[#64748b] shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-white/10 dark:bg-card/80 dark:text-muted-foreground">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                    onClick={() => setDetailsOpen((value) => !value)}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                      <span className="truncate">
+                        {t('remoteInstances.intercom.exitCodeLabel')}: {latestRun.exitCode ?? '-'} / {t('remoteInstances.intercom.durationLabel')}: {latestRun.durationMs ?? '-'}ms
+                      </span>
+                    </span>
+                    <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${detailsOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {detailsOpen ? (
+                    <div className="mt-3 space-y-3">
+                      <p className="break-all font-mono text-[10px] leading-4 text-[#64748b] dark:text-muted-foreground">
+                        {latestRun.commandPreview}
+                      </p>
+                      <div>
+                        <p className="font-medium uppercase tracking-[0.04em]">stdout</p>
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-[#f8fafc] px-3 py-2 font-mono text-[10px] leading-4 text-[#0f172a] dark:bg-background dark:text-foreground">
+                          {latestRun.stdout || t('remoteInstances.intercom.emptyOutput')}
+                        </pre>
+                      </div>
+                      {latestRun.stderr ? (
+                        <div>
+                          <p className="font-medium uppercase tracking-[0.04em]">stderr</p>
+                          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-[#f8fafc] px-3 py-2 font-mono text-[10px] leading-4 text-[#0f172a] dark:bg-background dark:text-foreground">
+                            {latestRun.stderr}
+                          </pre>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <footer className="shrink-0 border-t border-black/[0.06] bg-white px-5 pb-5 pt-4 dark:border-white/10 dark:bg-card">
+            <div className="mx-auto max-w-[960px]">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <label className="flex min-w-[220px] items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
+                  <span>{t('remoteInstances.intercom.senderLabel')}</span>
+                  <Select
+                    aria-label="Sender agent"
+                    className="h-8 min-w-[150px] rounded-full bg-[#f8fafc] py-1 text-[12px] dark:bg-background"
+                    value={messageDraft.sender}
+                    onChange={(event) => setMessageDraft((current) => ({ ...current, sender: event.target.value }))}
+                  >
+                    {localAgents.length === 0 ? <option value="main">main</option> : null}
+                    {localAgents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name || agent.id}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                <div className="flex min-w-0 items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
+                  {selectedRoute ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  ) : (
+                    <Server className="h-4 w-4 shrink-0 text-amber-600" />
+                  )}
                   <span className="truncate">
-                    {selectedRoute?.displayName || selectedRoute?.id || t('remoteInstances.intercom.routeNeedsSave')}
+                    {selectedRoute
+                      ? t('remoteInstances.intercom.readyToSend')
+                      : t('remoteInstances.intercom.routeNeedsSave')}
                   </span>
                 </div>
               </div>
-            </div>
 
-            <Textarea
-              aria-label="Intercom message"
-              className="mt-4 min-h-[220px]"
-              placeholder={t('remoteInstances.intercom.messagePlaceholder')}
-              value={messageDraft.message}
-              onChange={(event) => setMessageDraft((current) => ({ ...current, message: event.target.value }))}
-            />
-
-            <div className="mt-4 rounded-lg border border-black/[0.04] bg-[#f8fafc] px-3 py-3 dark:border-white/10 dark:bg-background">
-              <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
-                <Terminal className="h-3.5 w-3.5" />
-                {t('remoteInstances.intercom.previewLabel')}
+              <div className="flex items-end gap-3 rounded-[22px] border border-black/10 bg-[#f7f7f9] px-4 py-3 shadow-[0_4px_18px_rgba(15,23,42,0.06)] focus-within:border-[#0a84ff]/50 dark:border-white/10 dark:bg-background">
+                <Textarea
+                  aria-label="Intercom message"
+                  className="min-h-[24px] max-h-[160px] flex-1 resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-6 text-[#0f172a] shadow-none placeholder:text-[#8e8e93] focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-foreground"
+                  rows={1}
+                  placeholder={t('remoteInstances.intercom.messagePlaceholder')}
+                  value={messageDraft.message}
+                  onChange={(event) => setMessageDraft((current) => ({ ...current, message: event.target.value }))}
+                  onKeyDown={handleComposerKeyDown}
+                  disabled={!selectedRoute}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  className={`h-9 w-9 shrink-0 rounded-full transition-opacity ${
+                    canSend || sending
+                      ? 'bg-[#10b981] text-white hover:bg-[#059669]'
+                      : 'bg-transparent text-muted-foreground/50 hover:bg-transparent'
+                  }`}
+                  variant="ghost"
+                  onClick={() => void handleSendMessage()}
+                  disabled={!canSend}
+                  aria-label={t('remoteInstances.intercom.send')}
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                </Button>
               </div>
-              <p className="mt-2 break-all font-mono text-[11px] leading-5 text-[#0f172a] dark:text-foreground">
-                {sshPreview}
-              </p>
             </div>
-
-            {lastSendResult || error ? (
-              <div className={`mt-4 rounded-lg border px-3 py-3 ${
-                error
-                  ? 'border-red-200 bg-red-50 dark:border-red-900/50 dark:bg-red-950/20'
-                  : 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/20'
-              }`}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-[12px] font-semibold text-[#0f172a] dark:text-foreground">
-                    {error ? <Server className="h-4 w-4 text-red-600" /> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
-                    {error ? t('remoteInstances.intercom.deliveryFailedTitle') : t('remoteInstances.intercom.deliveryResultTitle')}
-                  </div>
-                  {lastSendResult ? (
-                    <Badge variant={lastSendResult.exitCode === 0 ? 'success' : 'warning'}>
-                      {t('remoteInstances.intercom.exitCodeLabel')}: {lastSendResult.exitCode ?? '-'}
-                    </Badge>
-                  ) : null}
-                </div>
-
-                {error ? (
-                  <p className="mt-3 break-words font-mono text-[11px] leading-5 text-red-700 dark:text-red-200">
-                    {error}
-                  </p>
-                ) : null}
-
-                {lastSendResult ? (
-                  <div className="mt-3 space-y-3">
-                    <div className="grid gap-2 text-[11px] text-[#64748b] dark:text-muted-foreground sm:grid-cols-3">
-                      <span>{t('remoteInstances.intercom.targetLabel')}: {lastSendResult.target}</span>
-                      <span>{t('remoteInstances.intercom.agentIdLabel')}: {lastSendResult.agent}</span>
-                      <span>{t('remoteInstances.intercom.durationLabel')}: {lastSendResult.durationMs ?? '-'}ms</span>
-                    </div>
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
-                        stdout
-                      </p>
-                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-white px-3 py-2 font-mono text-[11px] leading-5 text-[#0f172a] dark:bg-background dark:text-foreground">
-                        {lastSendResult.stdout || t('remoteInstances.intercom.emptyOutput')}
-                      </pre>
-                    </div>
-                    <div>
-                      <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
-                        stderr
-                      </p>
-                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-white px-3 py-2 font-mono text-[11px] leading-5 text-[#0f172a] dark:bg-background dark:text-foreground">
-                        {lastSendResult.stderr || t('remoteInstances.intercom.emptyOutput')}
-                      </pre>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-
-          <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-black/[0.06] px-5 py-4 dark:border-white/10">
-            <div className="flex min-w-0 items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
-              {selectedRoute ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-              ) : (
-                <Server className="h-4 w-4 shrink-0 text-amber-600" />
-              )}
-              <span className="truncate">
-                {selectedRoute
-                  ? t('remoteInstances.intercom.readyToSend')
-                  : t('remoteInstances.intercom.routeNeedsSave')}
-              </span>
-            </div>
-            <Button
-              type="button"
-              className="gap-2"
-              onClick={() => void handleSendMessage()}
-              disabled={!canSend}
-            >
-              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {t('remoteInstances.intercom.send')}
-            </Button>
           </footer>
         </section>
       </div>

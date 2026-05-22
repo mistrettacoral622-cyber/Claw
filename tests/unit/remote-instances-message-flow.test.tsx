@@ -151,7 +151,14 @@ describe('RemoteInstances message flow', () => {
           command: 'ssh',
           args: [],
           exitCode: 0,
-          stdout: '{"ok":true}',
+          stdout: JSON.stringify({
+            messages: [
+              {
+                role: 'assistant',
+                content: 'Remote agent received the plan.',
+              },
+            ],
+          }),
           stderr: '',
           durationMs: 123,
         };
@@ -184,9 +191,9 @@ describe('RemoteInstances message flow', () => {
         }),
       );
     });
-    expect(await screen.findByText('Remote response')).toBeInTheDocument();
-    expect(screen.getByText('{"ok":true}')).toBeInTheDocument();
-    expect(screen.getByText('Exit code: 0')).toBeInTheDocument();
+    expect(await screen.findByText('Plan the next step')).toBeInTheDocument();
+    expect(screen.getByText('Remote agent received the plan.')).toBeInTheDocument();
+    expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument();
     expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
   });
 });
