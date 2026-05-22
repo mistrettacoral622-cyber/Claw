@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { hostname } from 'node:os';
+import { hostname, userInfo } from 'node:os';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { listAgentsSnapshot } from '../utils/agent-config';
@@ -29,6 +29,18 @@ export interface IntercomSnapshot {
   defaultSessionId: string;
   routes: IntercomRoute[];
   localAgents: Array<{ id: string; name: string }>;
+  selfConfig: IntercomSelfConfig;
+}
+
+export interface IntercomSelfConfig {
+  host: string;
+  sshUser: string | null;
+  sshPort: number;
+  agentId: string;
+  sessionId: string;
+  remoteCommand: string;
+  routeIdExample: string;
+  displayNameExample: string;
 }
 
 export interface IntercomRouteInput {
@@ -113,6 +125,32 @@ function getLocalHost(config: IntercomConfigDocument): string {
 
 function getDefaultSessionId(config: IntercomConfigDocument): string {
   return normalizeString(getStoredIntercomConfig(config).defaultSessionId) || DEFAULT_SESSION_ID;
+}
+
+function getLocalSshUser(): string | null {
+  try {
+    return normalizeString(userInfo().username) || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildSelfConfig(
+  config: IntercomConfigDocument,
+  localAgents: Array<{ id: string; name: string }>,
+): IntercomSelfConfig {
+  const localHost = getLocalHost(config);
+  const agent = localAgents[0] ?? { id: 'main', name: 'Main' };
+  return {
+    host: localHost,
+    sshUser: getLocalSshUser(),
+    sshPort: 22,
+    agentId: agent.id,
+    sessionId: getDefaultSessionId(config),
+    remoteCommand: 'openclaw',
+    routeIdExample: `${localHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
+    displayNameExample: `${hostname() || localHost} / ${agent.name || agent.id}`,
+  };
 }
 
 function normalizeStoredRoute(
@@ -316,10 +354,13 @@ export async function getIntercomSnapshot(): Promise<IntercomSnapshot> {
     });
   }
 
+  const localAgents = agentsSnapshot.agents.map((agent) => ({ id: agent.id, name: agent.name || agent.id }));
+
   return {
     localHost: getLocalHost(config),
     defaultSessionId: getDefaultSessionId(config),
-    localAgents: agentsSnapshot.agents.map((agent) => ({ id: agent.id, name: agent.name || agent.id })),
+    localAgents,
+    selfConfig: buildSelfConfig(config, localAgents),
     routes: [...routesById.values()].sort((left, right) => left.id.localeCompare(right.id)),
   };
 }

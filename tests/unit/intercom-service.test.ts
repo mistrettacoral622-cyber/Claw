@@ -82,6 +82,14 @@ describe('intercom service', () => {
     const snapshot = await getIntercomSnapshot();
 
     expect(snapshot.localHost).toBe('desk-a');
+    expect(snapshot.selfConfig).toEqual(expect.objectContaining({
+      host: 'desk-a',
+      sshPort: 22,
+      agentId: 'main',
+      sessionId: 'intercom',
+      remoteCommand: 'openclaw',
+      routeIdExample: 'desk-a-main',
+    }));
     expect(snapshot.routes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'main',

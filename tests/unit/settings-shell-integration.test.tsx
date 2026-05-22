@@ -175,6 +175,16 @@ describe('Settings shell integration', () => {
           localAgents: [
             { id: 'researcher', name: 'Researcher' },
           ],
+          selfConfig: {
+            host: 'windows-dev',
+            sshUser: 'tester',
+            sshPort: 22,
+            agentId: 'researcher',
+            sessionId: 'intercom',
+            remoteCommand: 'openclaw',
+            routeIdExample: 'windows-dev-researcher',
+            displayNameExample: 'windows-dev / Researcher',
+          },
           routes: [],
         };
       }

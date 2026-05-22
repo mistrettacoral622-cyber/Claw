@@ -17,6 +17,17 @@ export type IntercomRoute = {
   source: 'config' | 'local';
 };
 
+export type IntercomSelfConfig = {
+  host: string;
+  sshUser: string | null;
+  sshPort: number;
+  agentId: string;
+  sessionId: string;
+  remoteCommand: string;
+  routeIdExample: string;
+  displayNameExample: string;
+};
+
 export type IntercomRouteInput = {
   id: string;
   displayName?: string;
@@ -48,6 +59,7 @@ type IntercomState = {
   localAgents: Array<{ id: string; name: string }>;
   localHost: string | null;
   defaultSessionId: string;
+  selfConfig: IntercomSelfConfig | null;
   loading: boolean;
   saving: boolean;
   sending: boolean;
@@ -98,6 +110,29 @@ function normalizeRoute(value: unknown): IntercomRoute | null {
   };
 }
 
+function normalizeSelfConfig(value: unknown): IntercomSelfConfig | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const host = readString(value.host);
+  const agentId = readString(value.agentId);
+  if (!host || !agentId) {
+    return null;
+  }
+
+  return {
+    host,
+    sshUser: readString(value.sshUser),
+    sshPort: typeof value.sshPort === 'number' && Number.isFinite(value.sshPort) ? value.sshPort : 22,
+    agentId,
+    sessionId: readString(value.sessionId) ?? 'intercom',
+    remoteCommand: readString(value.remoteCommand) ?? 'openclaw',
+    routeIdExample: readString(value.routeIdExample) ?? agentId,
+    displayNameExample: readString(value.displayNameExample) ?? agentId,
+  };
+}
+
 function normalizeSnapshot(value: unknown) {
   const row = isRecord(value) ? value : {};
   const localAgents = Array.isArray(row.localAgents)
@@ -122,6 +157,7 @@ function normalizeSnapshot(value: unknown) {
     localAgents,
     localHost: readString(row.localHost),
     defaultSessionId: readString(row.defaultSessionId) ?? 'intercom',
+    selfConfig: normalizeSelfConfig(row.selfConfig),
   };
 }
 
@@ -143,6 +179,7 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   localAgents: [],
   localHost: null,
   defaultSessionId: 'intercom',
+  selfConfig: null,
   loading: false,
   saving: false,
   sending: false,

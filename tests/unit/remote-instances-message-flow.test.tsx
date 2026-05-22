@@ -68,6 +68,16 @@ const READY_INTERCOM_RESPONSE = {
   localHost: 'windows-dev',
   defaultSessionId: 'intercom',
   localAgents: [{ id: 'dev', name: 'Dev Agent' }],
+  selfConfig: {
+    host: 'windows-dev',
+    sshUser: 'tester',
+    sshPort: 22,
+    agentId: 'dev',
+    sessionId: 'intercom',
+    remoteCommand: 'openclaw',
+    routeIdExample: 'windows-dev-dev',
+    displayNameExample: 'windows-dev / Dev Agent',
+  },
   routes: [
     {
       id: 'linux-ktclaw',
@@ -91,6 +101,7 @@ function resetIntercomStore() {
     localAgents: [],
     localHost: null,
     defaultSessionId: 'intercom',
+    selfConfig: null,
     loading: false,
     saving: false,
     sending: false,

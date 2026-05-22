@@ -41,6 +41,12 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.installProtocol': 'Install SOP',
         'remoteInstances.intercom.openConsole': 'Open console',
         'remoteInstances.intercom.selfTitle': 'This KTClaw',
+        'remoteInstances.intercom.selfShareTitle': 'Config others should enter',
+        'remoteInstances.intercom.selfShareDescription': 'Give these values to another KTClaw user so they can add this machine as an SSH Intercom route.',
+        'remoteInstances.intercom.selfHostToShareLabel': 'Host for others',
+        'remoteInstances.intercom.selfSshUserLabel': 'SSH user on this machine',
+        'remoteInstances.intercom.selfRouteExampleLabel': 'Route example',
+        'remoteInstances.intercom.unknownSshUser': 'Fill manually',
         'remoteInstances.intercom.localHostLabel': 'Local host',
         'remoteInstances.intercom.defaultSessionLabel': 'Default session',
         'remoteInstances.intercom.localAgentsLabel': 'Local agents',
@@ -48,8 +54,11 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.configuredInstancesTitle': 'Configured instances',
         'remoteInstances.intercom.instanceCount': `${options?.count ?? 0} instances`,
         'remoteInstances.intercom.emptyRoutes': 'No Intercom routes yet',
+        'remoteInstances.intercom.routeIdLabel': 'Route ID',
+        'remoteInstances.intercom.displayNameLabel': 'Display name',
         'remoteInstances.intercom.agentIdLabel': 'Agent ID',
         'remoteInstances.intercom.sessionLabel': 'Session',
+        'remoteInstances.intercom.sshPortLabel': 'SSH port',
         'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
         'remoteInstances.intercom.enabledLabel': 'Enabled',
         'remoteInstances.intercom.disabledLabel': 'Disabled',
@@ -64,6 +73,16 @@ const READY_INTERCOM_RESPONSE = {
   localHost: 'windows-dev',
   defaultSessionId: 'intercom',
   localAgents: [{ id: 'dev', name: 'Dev Agent' }],
+  selfConfig: {
+    host: 'windows-dev',
+    sshUser: 'tester',
+    sshPort: 22,
+    agentId: 'dev',
+    sessionId: 'intercom',
+    remoteCommand: 'openclaw',
+    routeIdExample: 'windows-dev-dev',
+    displayNameExample: 'windows-dev / Dev Agent',
+  },
   routes: [
     {
       id: 'linux-ktclaw',
@@ -87,6 +106,7 @@ function resetIntercomStore() {
     localAgents: [],
     localHost: null,
     defaultSessionId: 'intercom',
+    selfConfig: null,
     loading: false,
     saving: false,
     sending: false,
@@ -115,8 +135,16 @@ describe('SettingsRemoteInstancesPanel', () => {
 
     expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
     expect(screen.getByText('This KTClaw')).toBeInTheDocument();
+    expect(screen.getByText('Config others should enter')).toBeInTheDocument();
+    expect(screen.getByText('Host for others')).toBeInTheDocument();
+    expect(screen.getByText('SSH user on this machine')).toBeInTheDocument();
+    expect(screen.getByText('Route example')).toBeInTheDocument();
     expect(screen.getByText('Configured instances')).toBeInTheDocument();
-    expect(screen.getByText('windows-dev')).toBeInTheDocument();
+    expect(screen.getAllByText('windows-dev').length).toBeGreaterThan(0);
+    expect(screen.getByText('tester')).toBeInTheDocument();
+    expect(screen.getByText('ssh tester@windows-dev -p 22')).toBeInTheDocument();
+    expect(document.body.textContent).toContain('Route ID: windows-dev-dev');
+    expect(document.body.textContent).toContain('Display name: windows-dev / Dev Agent');
     expect(screen.getByText('Dev Agent')).toBeInTheDocument();
     expect(screen.getByText('Linux KTClaw')).toBeInTheDocument();
     expect(screen.getByText('ssh root@10.101.208.178 -p 22')).toBeInTheDocument();
