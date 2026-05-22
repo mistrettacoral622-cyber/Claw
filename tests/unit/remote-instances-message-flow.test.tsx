@@ -152,15 +152,10 @@ describe('RemoteInstances message flow', () => {
           args: [],
           exitCode: 0,
           stdout: JSON.stringify({
-            messages: [
+            content: [
               {
-                role: 'assistant',
-                content: [
-                  {
-                    text: 'Remote agent received the plan.',
-                    mediaUrl: null,
-                  },
-                ],
+                text: 'Remote agent received the plan.',
+                mediaUrl: null,
               },
             ],
           }),

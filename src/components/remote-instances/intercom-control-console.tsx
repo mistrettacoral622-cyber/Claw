@@ -289,6 +289,7 @@ export function IntercomControlConsole() {
           },
         };
       });
+      setDetailsOpen(false);
       toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
         code: result.exitCode ?? 0,
       }));

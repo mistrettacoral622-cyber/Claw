@@ -137,8 +137,9 @@ function readContentText(value: unknown): string {
     if (typeof value.text === 'string') {
       return value.text.trim();
     }
-    if (typeof value.content === 'string') {
-      return value.content.trim();
+    const content = readContentText(value.content);
+    if (content) {
+      return content;
     }
   }
   return '';
@@ -179,7 +180,7 @@ function findPreferredOutputText(value: unknown, depth = 0): string {
     return '';
   }
   const text = readContentText(value);
-  if (text && depth > 0) {
+  if (text) {
     return text;
   }
   if (!isRecord(value)) {
