@@ -2,10 +2,11 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { configStore, secretStore, spawnMock, sshClientInstances } = vi.hoisted(() => ({
+const { configStore, ktclawFiles, secretStore, spawnMock, sshClientInstances } = vi.hoisted(() => ({
   configStore: {
     current: {} as Record<string, unknown>,
   },
+  ktclawFiles: new Map<string, string>(),
   secretStore: new Map<string, unknown>(),
   spawnMock: vi.fn(),
   sshClientInstances: [] as Array<{
@@ -130,6 +131,24 @@ vi.mock('electron', () => ({
   },
 }));
 
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  return {
+    ...actual,
+    mkdir: vi.fn(),
+    readFile: vi.fn(async (filePath: string) => {
+      const value = ktclawFiles.get(String(filePath).replace(/\\/g, '/'));
+      if (value === undefined) {
+        throw new Error(`ENOENT: ${filePath}`);
+      }
+      return value;
+    }),
+    writeFile: vi.fn(async (filePath: string, data: string) => {
+      ktclawFiles.set(String(filePath).replace(/\\/g, '/'), data);
+    }),
+  };
+});
+
 vi.mock('@electron/utils/channel-config', () => ({
   readOpenClawConfig: async () => structuredClone(configStore.current),
   writeOpenClawConfig: async (config: Record<string, unknown>) => {
@@ -155,6 +174,7 @@ vi.mock('@electron/utils/agent-config', () => ({
 
 vi.mock('@electron/utils/paths', () => ({
   expandPath: (value: string) => value.replace(/^~/, '/home/tester'),
+  getKTClawConfigDir: () => '/tmp/ktclaw',
   getOpenClawDir: () => '/repo/node_modules/openclaw',
   getOpenClawEntryPath: () => '/repo/node_modules/openclaw/openclaw.mjs',
 }));
@@ -179,6 +199,7 @@ describe('intercom service', () => {
   beforeEach(() => {
     vi.resetModules();
     configStore.current = {};
+    ktclawFiles.clear();
     secretStore.clear();
     sshClientInstances.length = 0;
     spawnMock.mockReset();
@@ -226,7 +247,7 @@ describe('intercom service', () => {
     })).toBe('192.168.1.45');
   });
 
-  it('persists an SSH route under openclaw intercom agents', async () => {
+  it('persists an SSH route under KTClaw intercom config without touching OpenClaw root schema', async () => {
     const { upsertIntercomRoute } = await import('@electron/services/intercom');
 
     await upsertIntercomRoute({
@@ -239,7 +260,9 @@ describe('intercom service', () => {
       sshPort: 2222,
     });
 
-    expect(configStore.current.intercom).toEqual(expect.objectContaining({
+    expect(configStore.current).not.toHaveProperty('intercom');
+    const stored = JSON.parse(ktclawFiles.get('/tmp/ktclaw/intercom.json') ?? '{}');
+    expect(stored).toEqual(expect.objectContaining({
       localHost: 'desk-a',
       defaultSessionId: 'intercom',
       agents: {
@@ -252,6 +275,37 @@ describe('intercom service', () => {
           sshPort: 2222,
         }),
       },
+    }));
+  });
+
+  it('migrates legacy OpenClaw root intercom config into KTClaw storage', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+          },
+        },
+      },
+    };
+    const { getIntercomSnapshot } = await import('@electron/services/intercom');
+
+    const snapshot = await getIntercomSnapshot();
+
+    expect(snapshot.routes.find((route) => route.id === 'ops')).toEqual(expect.objectContaining({
+      host: 'srv-c',
+      agent: 'ops',
+    }));
+    expect(configStore.current).not.toHaveProperty('intercom');
+    expect(JSON.parse(ktclawFiles.get('/tmp/ktclaw/intercom.json') ?? '{}')).toEqual(expect.objectContaining({
+      agents: expect.objectContaining({
+        ops: expect.objectContaining({
+          host: 'srv-c',
+          agent: 'ops',
+        }),
+      }),
     }));
   });
 

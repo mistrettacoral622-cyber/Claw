@@ -6,7 +6,7 @@ import { Client, type ConnectConfig } from 'ssh2';
 import { listAgentsSnapshot } from '../utils/agent-config';
 import { readOpenClawConfig, writeOpenClawConfig, type OpenClawConfig } from '../utils/channel-config';
 import { withConfigLock } from '../utils/config-mutex';
-import { expandPath, getOpenClawDir, getOpenClawEntryPath } from '../utils/paths';
+import { expandPath, getKTClawConfigDir, getOpenClawDir, getOpenClawEntryPath } from '../utils/paths';
 import { logger } from '../utils/logger';
 import { deleteProviderSecret, getProviderSecret, setProviderSecret } from './secrets/secret-store';
 
@@ -91,7 +91,7 @@ interface StoredIntercomConfig extends Record<string, unknown> {
   agents?: Record<string, Partial<IntercomRouteInput>>;
 }
 
-interface IntercomConfigDocument extends OpenClawConfig {
+interface LegacyIntercomConfigDocument extends OpenClawConfig {
   intercom?: StoredIntercomConfig;
 }
 
@@ -101,6 +101,7 @@ const INTERCOM_PROTOCOL_MARKER = 'KTClaw Intercom Protocol';
 const SSH_CONNECT_TIMEOUT_SECONDS = 10;
 const INTERCOM_COMMAND_TIMEOUT_MS = 60_000;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
+const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -159,17 +160,72 @@ async function updateIntercomSshPassword(routeId: string, input: IntercomRouteIn
   }
 }
 
-function getStoredIntercomConfig(config: IntercomConfigDocument): StoredIntercomConfig {
-  return config.intercom && typeof config.intercom === 'object' && !Array.isArray(config.intercom)
+function isStoredIntercomConfig(value: unknown): value is StoredIntercomConfig {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getStoredIntercomConfig(config: StoredIntercomConfig): StoredIntercomConfig {
+  return isStoredIntercomConfig(config) ? config : {};
+}
+
+function getLegacyStoredIntercomConfig(config: LegacyIntercomConfigDocument): StoredIntercomConfig {
+  return isStoredIntercomConfig(config.intercom)
     ? config.intercom
     : {};
 }
 
-function getLocalHost(config: IntercomConfigDocument): string {
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    const raw = await readFile(filePath, 'utf-8');
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+async function readStandaloneIntercomConfig(): Promise<StoredIntercomConfig> {
+  const config = await readJsonFile<StoredIntercomConfig>(INTERCOM_CONFIG_FILE);
+  return getStoredIntercomConfig(config ?? {});
+}
+
+async function writeStandaloneIntercomConfig(config: StoredIntercomConfig): Promise<void> {
+  await writeJsonFile(INTERCOM_CONFIG_FILE, config);
+}
+
+async function migrateLegacyIntercomConfig(): Promise<StoredIntercomConfig> {
+  const standalone = await readStandaloneIntercomConfig();
+  const openclawConfig = await readOpenClawConfig() as LegacyIntercomConfigDocument;
+  const legacy = getLegacyStoredIntercomConfig(openclawConfig);
+  const hasLegacy = Object.keys(legacy).length > 0;
+
+  if (!hasLegacy) {
+    return standalone;
+  }
+
+  const merged: StoredIntercomConfig = {
+    ...legacy,
+    ...standalone,
+    agents: {
+      ...(legacy.agents ?? {}),
+      ...(standalone.agents ?? {}),
+    },
+  };
+  await writeStandaloneIntercomConfig(ensureIntercomConfig(merged));
+  delete openclawConfig.intercom;
+  await writeOpenClawConfig(openclawConfig);
+  return merged;
+}
+
+function getLocalHost(config: StoredIntercomConfig): string {
   return normalizeString(getStoredIntercomConfig(config).localHost) || hostname() || 'local';
 }
 
-function getDefaultSessionId(config: IntercomConfigDocument): string {
+function getDefaultSessionId(config: StoredIntercomConfig): string {
   return normalizeString(getStoredIntercomConfig(config).defaultSessionId) || DEFAULT_SESSION_ID;
 }
 
@@ -282,7 +338,7 @@ function getLocalSshUser(): string | null {
 }
 
 function buildSelfConfig(
-  config: IntercomConfigDocument,
+  config: StoredIntercomConfig,
   localAgents: Array<{ id: string; name: string }>,
 ): IntercomSelfConfig {
   const localHost = getLocalHost(config);
@@ -303,7 +359,7 @@ function buildSelfConfig(
 function normalizeStoredRoute(
   id: string,
   value: Partial<IntercomRouteInput> | undefined,
-  config: IntercomConfigDocument,
+  config: StoredIntercomConfig,
   passwordConfigured = false,
 ): IntercomRoute | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -334,7 +390,7 @@ function normalizeStoredRoute(
   };
 }
 
-function normalizeRouteForStorage(input: IntercomRouteInput, config: IntercomConfigDocument): IntercomRoute {
+function normalizeRouteForStorage(input: IntercomRouteInput, config: StoredIntercomConfig): IntercomRoute {
   const id = normalizeRouteId(input.id);
   const transport = normalizeTransport(input.transport);
   const agent = normalizeString(input.agent) || id;
@@ -644,7 +700,7 @@ function runIntercomCommand(command: string, args: string[], options: {
   });
 }
 
-function ensureIntercomConfig(config: IntercomConfigDocument): StoredIntercomConfig {
+function ensureIntercomConfig(config: StoredIntercomConfig): StoredIntercomConfig {
   const current = getStoredIntercomConfig(config);
   const next: StoredIntercomConfig = {
     ...current,
@@ -654,15 +710,15 @@ function ensureIntercomConfig(config: IntercomConfigDocument): StoredIntercomCon
       ? { ...current.agents }
       : {},
   };
-  config.intercom = next;
   return next;
 }
 
 export async function getIntercomSnapshot(): Promise<IntercomSnapshot> {
-  const [config, agentsSnapshot] = await Promise.all([
-    readOpenClawConfig() as Promise<IntercomConfigDocument>,
+  const [rawConfig, agentsSnapshot] = await Promise.all([
+    migrateLegacyIntercomConfig(),
     listAgentsSnapshot(),
   ]);
+  const config = ensureIntercomConfig(rawConfig);
   const intercom = getStoredIntercomConfig(config);
   const explicitAgents = intercom.agents && typeof intercom.agents === 'object' && !Array.isArray(intercom.agents)
     ? intercom.agents
@@ -705,27 +761,25 @@ export async function getIntercomSnapshot(): Promise<IntercomSnapshot> {
 
 export async function upsertIntercomRoute(input: IntercomRouteInput): Promise<IntercomSnapshot> {
   await withConfigLock(async () => {
-    const config = await readOpenClawConfig() as IntercomConfigDocument;
+    const config = ensureIntercomConfig(await migrateLegacyIntercomConfig());
     const route = normalizeRouteForStorage(input, config);
     await updateIntercomSshPassword(route.id, input);
-    const intercom = ensureIntercomConfig(config);
-    intercom.agents = {
-      ...(intercom.agents ?? {}),
+    config.agents = {
+      ...(config.agents ?? {}),
       [route.id]: toStoredRoute(route),
     };
-    await writeOpenClawConfig(config);
+    await writeStandaloneIntercomConfig(config);
   });
   return getIntercomSnapshot();
 }
 
 export async function deleteIntercomRoute(routeId: string): Promise<IntercomSnapshot> {
   await withConfigLock(async () => {
-    const config = await readOpenClawConfig() as IntercomConfigDocument;
-    const intercom = ensureIntercomConfig(config);
+    const config = ensureIntercomConfig(await migrateLegacyIntercomConfig());
     const id = normalizeRouteId(routeId);
-    delete intercom.agents?.[id];
+    delete config.agents?.[id];
     await deleteProviderSecret(getIntercomSshSecretId(id));
-    await writeOpenClawConfig(config);
+    await writeStandaloneIntercomConfig(config);
   });
   return getIntercomSnapshot();
 }
