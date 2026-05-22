@@ -563,19 +563,25 @@ export function IntercomControlConsole() {
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <label className="inline-flex max-w-full shrink-0 items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
                   <span className="shrink-0 whitespace-nowrap">{t('remoteInstances.intercom.senderLabel')}</span>
-                  <Select
-                    aria-label="Sender agent"
-                    className="h-9 w-[124px] min-w-0 rounded-full border-black/10 bg-[#f8fafc] py-1 pl-4 pr-9 text-[13px] font-medium text-[#0f172a] shadow-none dark:border-white/10 dark:bg-background dark:text-foreground"
-                    value={messageDraft.sender}
-                    onChange={(event) => setMessageDraft((current) => ({ ...current, sender: event.target.value }))}
-                  >
-                    {localAgents.length === 0 ? <option value="main">main</option> : null}
-                    {localAgents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name || agent.id}
-                      </option>
-                    ))}
-                  </Select>
+                  <span className="relative inline-flex h-9 w-[124px] items-center rounded-full border border-black/10 bg-[#f8fafc] px-4 text-[13px] font-medium text-[#0f172a] dark:border-white/10 dark:bg-background dark:text-foreground">
+                    <span className="min-w-0 flex-1 truncate">
+                      {messageDraft.sender || localAgents[0]?.id || 'main'}
+                    </span>
+                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-[#64748b] dark:text-muted-foreground" />
+                    <Select
+                      aria-label="Sender agent"
+                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      value={messageDraft.sender}
+                      onChange={(event) => setMessageDraft((current) => ({ ...current, sender: event.target.value }))}
+                    >
+                      {localAgents.length === 0 ? <option value="main">main</option> : null}
+                      {localAgents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name || agent.id}
+                        </option>
+                      ))}
+                    </Select>
+                  </span>
                 </label>
                 <div className="flex min-w-0 items-center gap-2 text-[12px] text-[#64748b] dark:text-muted-foreground">
                   {selectedRoute ? (
