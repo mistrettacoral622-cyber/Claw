@@ -23,7 +23,7 @@
     "license": "MIT",
     "private": true,
     "scripts": {
-        "postinstall": "electron-rebuild -f -w better-sqlite3",
+        "postinstall": "electron-rebuild -f --only better-sqlite3 --types prod",
         "init": "pnpm install && pnpm run uv:download",
         "dev": "node scripts/dev.mjs",
         "build": "pnpm run package:prepare && electron-builder",
