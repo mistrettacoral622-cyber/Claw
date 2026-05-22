@@ -382,7 +382,7 @@ describe('intercom service', () => {
         '-p',
         '2222',
         'ubuntu@srv-c',
-        expect.stringContaining("openclaw 'agent' '--agent' 'ops' '--session-id' 'intercom' '--message'"),
+        expect.stringContaining("'openclaw' 'agent' '--agent' 'ops' '--session-id' 'intercom' '--message'"),
       ],
       expect.objectContaining({
         detached: false,
@@ -392,6 +392,32 @@ describe('intercom service', () => {
     );
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('[from agent dev] 更新头像');
+  });
+
+  it('allows a remote OpenClaw command prefix with arguments', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
   });
 
   it('sends password-backed SSH intercom messages through ssh2', async () => {
@@ -434,7 +460,7 @@ describe('intercom service', () => {
       password: 'linux-password',
     }));
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("openclaw 'agent' '--agent' 'ops'"),
+      expect.stringContaining("'openclaw' 'agent' '--agent' 'ops'"),
       expect.any(Function),
     );
   });

@@ -31,4 +31,11 @@ describe('bundle openclaw script', () => {
     expect(source).toContain("'dist/extensions/slack'");
     expect(source).toContain("'dist/extensions/telegram'");
   });
+
+  it('keeps the Linux CLI wrapper usable when copied to /usr/local/bin', () => {
+    const wrapper = readFileSync(resolve(process.cwd(), 'resources/cli/posix/openclaw'), 'utf8');
+
+    expect(wrapper).toContain('[ -f "/opt/KTClaw/ktclaw" ]');
+    expect(wrapper).toContain('INSTALL_DIR="/opt/KTClaw"');
+  });
 });

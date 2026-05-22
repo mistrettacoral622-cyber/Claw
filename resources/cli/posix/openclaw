@@ -21,6 +21,9 @@ else
   # Linux: /opt/KTClaw/resources/cli/openclaw
   # SCRIPT_DIR = .../resources/cli
   INSTALL_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+  if [ ! -f "$INSTALL_DIR/ktclaw" ] && [ -f "/opt/KTClaw/ktclaw" ]; then
+    INSTALL_DIR="/opt/KTClaw"
+  fi
   ELECTRON="$INSTALL_DIR/ktclaw"
   CLI="$INSTALL_DIR/resources/openclaw/openclaw.mjs"
 fi

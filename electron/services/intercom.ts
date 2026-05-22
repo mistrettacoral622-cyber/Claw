@@ -433,6 +433,57 @@ function quotePosix(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function quoteRemoteCommandPart(value: string): string {
+  const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(value);
+  if (assignment) {
+    return `${assignment[1]}=${quotePosix(assignment[2] ?? '')}`;
+  }
+  return quotePosix(value);
+}
+
+function splitPosixCommand(value: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let escaping = false;
+
+  for (const char of value) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+    if ((char === '"' || char === "'") && quote === null) {
+      quote = char;
+      continue;
+    }
+    if (char === quote) {
+      quote = null;
+      continue;
+    }
+    if (/\s/.test(char) && quote === null) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaping) {
+    current += '\\';
+  }
+  if (current) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
 function buildCallerMessage(sender: string, message: string): string {
   return `[from agent ${sender}] ${message}`;
 }
@@ -486,10 +537,10 @@ function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: st
     message,
     '--json',
   ];
-  const openclawCommand = route.remoteCommand || 'openclaw';
-  const remoteCommandPrefix = /[\s'"\\]/.test(openclawCommand)
-    ? quotePosix(openclawCommand)
-    : openclawCommand;
+  const commandParts = splitPosixCommand(route.remoteCommand || 'openclaw');
+  const remoteCommandPrefix = commandParts.length > 0
+    ? commandParts.map(quoteRemoteCommandPart).join(' ')
+    : quotePosix('openclaw');
   return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
 }
 
