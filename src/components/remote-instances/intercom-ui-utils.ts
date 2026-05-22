@@ -87,8 +87,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function normalizeIntercomOutput(value: string): string {
+  return value
+    .replace(/^\uFEFF/, '')
+    .replaceAll(String.fromCharCode(0), '')
+    .replace(new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g'), '')
+    .trim();
+}
+
+function findJsonCandidate(value: string): string | null {
+  const start = value.search(/[{}[\]]/);
+  if (start < 0) {
+    return null;
+  }
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') {
+      stack.push('}');
+      continue;
+    }
+    if (char === '[') {
+      stack.push(']');
+      continue;
+    }
+    if (char === '}' || char === ']') {
+      const expected = stack.pop();
+      if (expected !== char) {
+        return null;
+      }
+      if (stack.length === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
 function parseIntercomJson(value: string): unknown | null {
-  const trimmed = value.trim();
+  const trimmed = normalizeIntercomOutput(value);
   if (!trimmed) {
     return null;
   }
@@ -96,17 +152,39 @@ function parseIntercomJson(value: string): unknown | null {
   try {
     return JSON.parse(trimmed);
   } catch {
-    const firstBrace = trimmed.indexOf('{');
-    const lastBrace = trimmed.lastIndexOf('}');
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = findJsonCandidate(trimmed);
+    if (candidate) {
       try {
-        return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+        return JSON.parse(candidate);
       } catch {
         return null;
       }
     }
     return null;
   }
+}
+
+function decodeJsonStringLiteral(value: string): string | null {
+  try {
+    const parsed = JSON.parse(`"${value}"`);
+    return typeof parsed === 'string' ? parsed.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonTextFields(value: string): string[] {
+  const texts: string[] = [];
+  const regex = /"text"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  let match = regex.exec(value);
+  while (match) {
+    const text = decodeJsonStringLiteral(match[1]);
+    if (text) {
+      texts.push(text);
+    }
+    match = regex.exec(value);
+  }
+  return texts;
 }
 
 function readContentText(value: unknown): string {
@@ -144,6 +222,43 @@ function readContentText(value: unknown): string {
     }
   }
   return '';
+}
+
+function collectDisplayTexts(value: unknown, texts: string[], seen = new Set<unknown>(), depth = 0): void {
+  if (depth > 8 || value === null || typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectDisplayTexts(entry, texts, seen, depth + 1);
+    }
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  if (typeof value.text === 'string' && value.text.trim()) {
+    texts.push(value.text.trim());
+  }
+
+  for (const key of ['content', 'response', 'reply', 'answer', 'output', 'message', 'result', 'data']) {
+    collectDisplayTexts(value[key], texts, seen, depth + 1);
+  }
+}
+
+function findDisplayText(value: unknown): string {
+  const preferred = findPreferredOutputText(value).trim();
+  if (preferred) {
+    return preferred;
+  }
+
+  const texts: string[] = [];
+  collectDisplayTexts(value, texts);
+  return texts.join('\n\n').trim();
 }
 
 function collectAssistantTexts(value: unknown, texts: string[], seen = new Set<unknown>(), depth = 0): void {
@@ -289,8 +404,13 @@ function stripNoisyIntercomLines(value: string): string {
     .trim();
 }
 
+function looksLikeStructuredOutput(value: string): boolean {
+  const trimmed = normalizeIntercomOutput(value);
+  return /^[{[]/.test(trimmed) || /"(?:content|messages|meta|text)"\s*:/.test(trimmed);
+}
+
 export function extractIntercomReplyText(stdout: string): string {
-  const trimmed = stdout.trim();
+  const trimmed = normalizeIntercomOutput(stdout);
   if (!trimmed) {
     return '';
   }
@@ -304,15 +424,23 @@ export function extractIntercomReplyText(stdout: string): string {
       return assistantText;
     }
 
-    const preferred = findPreferredOutputText(parsed).trim();
+    const preferred = findDisplayText(parsed);
     if (preferred) {
       return preferred;
     }
 
-    return trimmed.length <= 2000 ? trimmed : '';
+    return '';
+  }
+
+  const recoveredTexts = extractJsonTextFields(trimmed);
+  if (recoveredTexts.length > 0) {
+    return recoveredTexts.join('\n\n').trim();
   }
 
   const cleaned = stripNoisyIntercomLines(trimmed);
+  if (looksLikeStructuredOutput(cleaned)) {
+    return '';
+  }
   if (cleaned.length <= 4000) {
     return cleaned;
   }
@@ -320,7 +448,7 @@ export function extractIntercomReplyText(stdout: string): string {
 }
 
 export function extractIntercomReplyMessages(stdout: string): RawMessage[] {
-  const trimmed = stdout.trim();
+  const trimmed = normalizeIntercomOutput(stdout);
   if (!trimmed) {
     return [];
   }
@@ -333,11 +461,15 @@ export function extractIntercomReplyMessages(stdout: string): RawMessage[] {
       return rawMessages;
     }
 
-    const text = findPreferredOutputText(parsed).trim();
+    const text = findDisplayText(parsed);
     if (text) {
       return [{ role: 'assistant', content: text }];
     }
-    return [];
+  }
+
+  const recoveredTexts = extractJsonTextFields(trimmed);
+  if (recoveredTexts.length > 0) {
+    return [{ role: 'assistant', content: recoveredTexts.join('\n\n').trim() }];
   }
 
   const text = extractIntercomReplyText(trimmed);

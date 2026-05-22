@@ -116,7 +116,7 @@ function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): R
   if (result.exitCode && result.exitCode !== 0 && result.stderr.trim()) {
     return [createIntercomMessage('assistant', result.stderr.trim(), `${idPrefix}-assistant-error`)];
   }
-  return [createIntercomMessage('assistant', `Command completed with exit code ${result.exitCode ?? 0}. Raw output is available in run details.`, `${idPrefix}-assistant`)];
+  return [];
 }
 
 export function IntercomControlConsole() {

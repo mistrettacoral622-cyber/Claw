@@ -236,4 +236,35 @@ describe('RemoteInstances message flow', () => {
     expect(screen.queryByText(/"messages"/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
   });
+
+  it('renders text from noisy OpenClaw stdout content arrays', async () => {
+    remoteStdout = [
+      '[plugins] [a2a] Registered 6 outbound tools for 1 agent(s)',
+      JSON.stringify({
+        content: [
+          {
+            text: '你好！😊\n\n感觉你一直在试探我，又不急着让我干活的节奏。没问题，我随时在。',
+            mediaUrl: null,
+          },
+        ],
+        meta: {
+          durationMs: 73751,
+          agentMeta: { id: 'main' },
+        },
+      }),
+      '[plugins] [a2a] Plugin registered successfully',
+    ].join('\n');
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: '你好啊' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('你好啊')).toBeInTheDocument();
+    expect(screen.getByText(/感觉你一直在试探我/)).toBeInTheDocument();
+    expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
+  });
 });
