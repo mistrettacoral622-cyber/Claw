@@ -167,6 +167,17 @@ describe('Settings shell integration', () => {
           },
         };
       }
+      if (path === '/api/intercom') {
+        return {
+          success: true,
+          localHost: 'windows-dev',
+          defaultSessionId: 'intercom',
+          localAgents: [
+            { id: 'researcher', name: 'Researcher' },
+          ],
+          routes: [],
+        };
+      }
       if (path === '/api/usage/recent-token-history?limit=200') {
         return [
           {
@@ -223,7 +234,7 @@ describe('Settings shell integration', () => {
     ['general', async () => expect(await screen.findByLabelText('工作台名称')).toBeInTheDocument()],
     ['skills-mcp', async () => expect(await screen.findByText('全局 Skills 与 MCP 中心')).toBeInTheDocument()],
     ['tool-permissions', async () => expect(await screen.findByText('工具权限')).toBeInTheDocument()],
-    ['remote-instances', async () => expect(await screen.findByLabelText('remoteInstances.add.agentCardUrlLabel')).toBeInTheDocument()],
+    ['remote-instances', async () => expect(await screen.findByText('remoteInstances.intercom.configuredInstancesTitle')).toBeInTheDocument()],
     ['memory-knowledge', async () => expect(await screen.findByRole('tab', { name: 'memoryKnowledge.tabs.strategy' })).toBeInTheDocument()],
     ['migration-backup', async () => expect(await screen.findByRole('button', { name: '立即创建备份' })).toBeInTheDocument()],
     ['app-updates', async () => expect(await screen.findByRole('combobox', { name: '更新渠道' })).toBeInTheDocument()],

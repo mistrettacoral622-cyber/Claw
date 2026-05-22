@@ -1,53 +1,101 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemoteInstances } from '@/pages/RemoteInstances';
-import { useRemoteInstancesStore, type RemoteInstance } from '@/stores/remote-instances';
+import { useIntercomStore } from '@/stores/intercom';
 import { hostApiFetch } from '@/lib/host-api';
-
-const navigateMock = vi.fn();
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => navigateMock,
-  };
-});
 
 vi.mock('@/lib/host-api', () => ({
   hostApiFetch: vi.fn(),
 }));
 
-const BASE_INSTANCE: RemoteInstance = {
-  id: 'remote-1',
-  displayName: 'Edge Assistant',
-  agentCardUrl: 'https://edge.example/.well-known/agent-card.json',
-  authMode: 'none',
-  bearerToken: null,
-  headers: {},
-  agentCard: {
-    name: 'Edge Assistant',
-    description: 'Handles remote planning tasks.',
-    version: '2026.4.8',
-    url: 'https://edge.example/.well-known/agent-card.json',
-    capabilities: [
-      { id: 'chat', label: 'Chat', description: 'Accepts multi-turn messages' },
-      { id: 'search', label: 'Search', description: null },
-    ],
-    skills: ['planner'],
-    defaultInputModes: ['text/plain'],
-    defaultOutputModes: ['text/plain'],
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
   },
-  lastTest: {
-    ok: true,
-    status: 'ok',
-    message: 'Agent Card reachable',
-    checkedAt: '2026-05-20T08:00:00.000Z',
+}));
+
+vi.mock('react-i18next', () => ({
+  initReactI18next: {
+    type: '3rdParty',
+    init: vi.fn(),
   },
-  createdAt: '2026-05-20T07:30:00.000Z',
-  updatedAt: '2026-05-20T08:00:00.000Z',
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) => {
+      const table: Record<string, string> = {
+        'remoteInstances.intercom.consoleTitle': 'Remote instance control',
+        'remoteInstances.intercom.consoleDescription': 'Pick a configured Linux KTClaw and send commands.',
+        'remoteInstances.intercom.refresh': 'Refresh',
+        'remoteInstances.intercom.installProtocol': 'Install SOP',
+        'remoteInstances.intercom.instanceListTitle': 'Instances',
+        'remoteInstances.intercom.instanceCount': `${options?.count ?? 0} instances`,
+        'remoteInstances.intercom.emptyRoutes': 'No Intercom routes yet',
+        'remoteInstances.intercom.newRoute': 'New',
+        'remoteInstances.intercom.configureTitle': 'Instance configuration',
+        'remoteInstances.intercom.configureRoute': 'Configure route',
+        'remoteInstances.intercom.configSheetDescription': 'Edit the SSH route used to reach this remote KTClaw instance.',
+        'remoteInstances.intercom.routeReady': 'Route saved',
+        'remoteInstances.intercom.unsavedRoute': 'Unsaved route',
+        'remoteInstances.intercom.hostLabel': 'Host',
+        'remoteInstances.intercom.sshUserLabel': 'SSH user',
+        'remoteInstances.intercom.sshPortLabel': 'SSH port',
+        'remoteInstances.intercom.agentIdLabel': 'Agent ID',
+        'remoteInstances.intercom.sessionLabel': 'Session',
+        'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
+        'remoteInstances.intercom.routeIdLabel': 'Route ID',
+        'remoteInstances.intercom.displayNameLabel': 'Display name',
+        'remoteInstances.intercom.saveRoute': 'Save route',
+        'remoteInstances.intercom.chatTitle': 'Conversation',
+        'remoteInstances.intercom.chatNeedsRoute': 'Save or select a route before sending a message.',
+        'remoteInstances.intercom.senderLabel': 'Sender',
+        'remoteInstances.intercom.targetLabel': 'Target',
+        'remoteInstances.intercom.messagePlaceholder': 'Boss says update your avatar; reply when done',
+        'remoteInstances.intercom.previewLabel': 'Command preview',
+        'remoteInstances.intercom.routeNeedsSave': 'Save route before sending',
+        'remoteInstances.intercom.readyToSend': 'Ready to send through SSH',
+        'remoteInstances.intercom.send': 'Send',
+      };
+      return table[key] ?? key;
+    },
+  }),
+}));
+
+const READY_INTERCOM_RESPONSE = {
+  success: true,
+  localHost: 'windows-dev',
+  defaultSessionId: 'intercom',
+  localAgents: [{ id: 'dev', name: 'Dev Agent' }],
+  routes: [
+    {
+      id: 'linux-ktclaw',
+      displayName: 'Linux KTClaw',
+      host: '10.101.208.178',
+      agent: 'zz',
+      transport: 'ssh',
+      sessionId: 'intercom',
+      enabled: true,
+      sshUser: 'root',
+      sshPort: 22,
+      remoteCommand: 'openclaw',
+      source: 'config',
+    },
+  ],
 };
+
+function resetIntercomStore() {
+  useIntercomStore.setState({
+    routes: [],
+    localAgents: [],
+    localHost: null,
+    defaultSessionId: 'intercom',
+    loading: false,
+    saving: false,
+    sending: false,
+    installingProtocol: false,
+    error: null,
+  });
+}
 
 function renderPage() {
   return render(
@@ -60,41 +108,24 @@ function renderPage() {
 describe('RemoteInstances page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useRemoteInstancesStore.getState().reset();
-    vi.mocked(hostApiFetch).mockResolvedValue({ instances: [BASE_INSTANCE] });
+    resetIntercomStore();
+    vi.mocked(hostApiFetch).mockResolvedValue(READY_INTERCOM_RESPONSE);
   });
 
-  it('renders a dedicated left-list and center conversation workspace', async () => {
+  it('renders a three-column remote control console', async () => {
     renderPage();
 
-    expect(await screen.findByRole('heading', { name: '远程实例' })).toBeInTheDocument();
-    expect(screen.getAllByText('Edge Assistant').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Remote conversation').length).toBeGreaterThan(0);
-    expect(screen.getByText('Start the remote thread')).toBeInTheDocument();
-    expect(screen.getByLabelText('Message this remote instance')).toBeInTheDocument();
-    expect(screen.getByText(/不进入全局会话列表/)).toBeInTheDocument();
-  });
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    expect(screen.getByText('Instances')).toBeInTheDocument();
+    expect(screen.getByText('Conversation')).toBeInTheDocument();
+    expect(screen.getAllByText('Linux KTClaw').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Intercom message')).toBeInTheDocument();
+    expect(screen.queryByText('Agent Card URL')).not.toBeInTheDocument();
 
-  it('selects an instance and exposes Agent Card diagnostics in the details drawer', async () => {
-    renderPage();
-
-    await screen.findAllByText('Edge Assistant');
-    fireEvent.click(screen.getByRole('button', { name: '详情' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Configure route' }));
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('Agent Card')).toBeInTheDocument();
-    expect(screen.getByText('Agent Card reachable')).toBeInTheDocument();
-    expect(screen.getAllByText('text/plain').length).toBeGreaterThan(0);
-  });
-
-  it('navigates to Settings for remote-instance management without using global sessions', async () => {
-    renderPage();
-
-    await screen.findAllByText('Edge Assistant');
-    fireEvent.click(screen.getByRole('button', { name: '设置' }));
-
-    await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledWith('/settings?section=remote-instances');
-    });
+    expect(screen.getByText('Instance configuration')).toBeInTheDocument();
+    expect(screen.getByLabelText('Linux host')).toHaveValue('10.101.208.178');
   });
 });

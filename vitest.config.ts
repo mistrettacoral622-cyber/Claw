@@ -15,6 +15,7 @@ const nodeTestInclude = [
   'tests/unit/permissions-enforcer.test.ts',
   'tests/unit/session-*.test.ts',
   'tests/unit/openclaw-*.test.ts',
+  'tests/unit/remote-instances-agent-card.test.ts',
   'tests/unit/remote-instances-a2a-runtime.test.ts',
   'tests/unit/preinstalled-skills-script.test.ts',
   'tests/unit/ralph-codex-*.test.ts',
@@ -27,6 +28,7 @@ const nodeTestInclude = [
   'tests/unit/image-vector-store.test.ts',
   'tests/unit/image-index-manager.test.ts',
   'tests/unit/image-search-auto-index.test.ts',
+  'tests/unit/intercom-*.test.ts',
   'tests/unit/local-asr.test.ts',
 ];
 

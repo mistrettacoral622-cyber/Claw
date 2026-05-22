@@ -2,55 +2,102 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemoteInstances } from '@/pages/RemoteInstances';
+import { useIntercomStore } from '@/stores/intercom';
 import { hostApiFetch } from '@/lib/host-api';
-import { useRemoteInstancesStore, type RemoteInstance } from '@/stores/remote-instances';
-
-const navigateMock = vi.fn();
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => navigateMock,
-  };
-});
-
-vi.mock('@/pages/Chat/MarkdownContent', () => ({
-  default: ({ content }: { content: string }) => <div>{content}</div>,
-}));
 
 vi.mock('@/lib/host-api', () => ({
   hostApiFetch: vi.fn(),
 }));
 
-const BASE_INSTANCE: RemoteInstance = {
-  id: 'remote-1',
-  displayName: 'Edge Assistant',
-  agentCardUrl: 'https://edge.example/.well-known/agent-card.json',
-  authMode: 'none',
-  bearerToken: null,
-  headers: {},
-  agentCard: {
-    name: 'Edge Assistant',
-    description: 'Handles remote planning tasks.',
-    version: '2026.4.8',
-    url: 'https://edge.example/.well-known/agent-card.json',
-    capabilities: [
-      { id: 'chat', label: 'Chat', description: 'Accepts multi-turn messages' },
-    ],
-    skills: ['planner'],
-    defaultInputModes: ['text/plain'],
-    defaultOutputModes: ['text/plain'],
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
   },
-  lastTest: {
-    ok: true,
-    status: 'ok',
-    message: 'Agent Card reachable',
-    checkedAt: '2026-05-20T08:00:00.000Z',
+}));
+
+vi.mock('react-i18next', () => ({
+  initReactI18next: {
+    type: '3rdParty',
+    init: vi.fn(),
   },
-  createdAt: '2026-05-20T07:30:00.000Z',
-  updatedAt: '2026-05-20T08:00:00.000Z',
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) => {
+      const table: Record<string, string> = {
+        'remoteInstances.intercom.consoleTitle': 'Remote instance control',
+        'remoteInstances.intercom.consoleDescription': 'Pick a configured Linux KTClaw and send commands.',
+        'remoteInstances.intercom.refresh': 'Refresh',
+        'remoteInstances.intercom.installProtocol': 'Install SOP',
+        'remoteInstances.intercom.instanceListTitle': 'Instances',
+        'remoteInstances.intercom.instanceCount': `${options?.count ?? 0} instances`,
+        'remoteInstances.intercom.emptyRoutes': 'No Intercom routes yet',
+        'remoteInstances.intercom.newRoute': 'New',
+        'remoteInstances.intercom.configureTitle': 'Instance configuration',
+        'remoteInstances.intercom.configureRoute': 'Configure route',
+        'remoteInstances.intercom.configSheetDescription': 'Edit the SSH route used to reach this remote KTClaw instance.',
+        'remoteInstances.intercom.routeReady': 'Route saved',
+        'remoteInstances.intercom.unsavedRoute': 'Unsaved route',
+        'remoteInstances.intercom.hostLabel': 'Host',
+        'remoteInstances.intercom.sshUserLabel': 'SSH user',
+        'remoteInstances.intercom.sshPortLabel': 'SSH port',
+        'remoteInstances.intercom.agentIdLabel': 'Agent ID',
+        'remoteInstances.intercom.sessionLabel': 'Session',
+        'remoteInstances.intercom.remoteCommandLabel': 'Remote OpenClaw command',
+        'remoteInstances.intercom.routeIdLabel': 'Route ID',
+        'remoteInstances.intercom.displayNameLabel': 'Display name',
+        'remoteInstances.intercom.saveRoute': 'Save route',
+        'remoteInstances.intercom.chatTitle': 'Conversation',
+        'remoteInstances.intercom.chatNeedsRoute': 'Save or select a route before sending a message.',
+        'remoteInstances.intercom.senderLabel': 'Sender',
+        'remoteInstances.intercom.targetLabel': 'Target',
+        'remoteInstances.intercom.messagePlaceholder': 'Boss says update your avatar; reply when done',
+        'remoteInstances.intercom.previewLabel': 'Command preview',
+        'remoteInstances.intercom.routeNeedsSave': 'Save route before sending',
+        'remoteInstances.intercom.readyToSend': 'Ready to send through SSH',
+        'remoteInstances.intercom.send': 'Send',
+        'remoteInstances.intercom.toasts.messageQueued': 'Message sent to Linux',
+        'remoteInstances.intercom.toasts.messageFailed': 'Failed to send message',
+      };
+      return table[key] ?? key;
+    },
+  }),
+}));
+
+const READY_INTERCOM_RESPONSE = {
+  success: true,
+  localHost: 'windows-dev',
+  defaultSessionId: 'intercom',
+  localAgents: [{ id: 'dev', name: 'Dev Agent' }],
+  routes: [
+    {
+      id: 'linux-ktclaw',
+      displayName: 'Linux KTClaw',
+      host: '10.101.208.178',
+      agent: 'zz',
+      transport: 'ssh',
+      sessionId: 'intercom',
+      enabled: true,
+      sshUser: 'root',
+      sshPort: 22,
+      remoteCommand: 'openclaw',
+      source: 'config',
+    },
+  ],
 };
+
+function resetIntercomStore() {
+  useIntercomStore.setState({
+    routes: [],
+    localAgents: [],
+    localHost: null,
+    defaultSessionId: 'intercom',
+    loading: false,
+    saving: false,
+    sending: false,
+    installingProtocol: false,
+    error: null,
+  });
+}
 
 function renderPage() {
   return render(
@@ -63,45 +110,53 @@ function renderPage() {
 describe('RemoteInstances message flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.clear();
-    useRemoteInstancesStore.getState().reset();
-    vi.mocked(hostApiFetch)
-      .mockResolvedValueOnce({ instances: [BASE_INSTANCE] })
-      .mockResolvedValueOnce({
-        context_id: 'ctx-remote-1',
-        task_id: 'task-remote-1',
-        message: {
-          role: 'assistant',
-          content: 'Remote reply',
-        },
-      });
+    resetIntercomStore();
+    vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/api/intercom' && (!init || init.method === undefined)) {
+        return READY_INTERCOM_RESPONSE;
+      }
+      if (path === '/api/intercom/send' && init?.method === 'POST') {
+        return {
+          success: true,
+          queued: true,
+          target: 'linux-ktclaw',
+          sender: 'dev',
+          transport: 'ssh',
+          host: '10.101.208.178',
+          agent: 'zz',
+          sessionId: 'intercom',
+          command: 'ssh',
+          args: [],
+        };
+      }
+      throw new Error(`Unexpected host api call: ${path} ${init?.method ?? 'GET'}`);
+    });
   });
 
-  it('sends a remote message, renders the reply, and keeps continuity metadata visible', async () => {
+  it('sends the standalone remote page message through SSH intercom', async () => {
     renderPage();
 
-    expect(await screen.findAllByText('Edge Assistant')).not.toHaveLength(0);
-    expect(screen.getByText('Start the remote thread')).toBeInTheDocument();
-    expect(screen.getAllByText('Chat').length).toBeGreaterThan(0);
-
-    fireEvent.change(screen.getByLabelText('Message this remote instance'), {
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    expect(screen.getByText('Ready to send through SSH')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
       target: { value: 'Plan the next step' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Send remote message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
       expect(hostApiFetch).toHaveBeenCalledWith(
-        '/api/remote-instances/remote-1/conversation/messages',
+        '/api/intercom/send',
         expect.objectContaining({
           method: 'POST',
-          body: expect.stringContaining('"message":"Plan the next step"'),
+          body: JSON.stringify({
+            sender: 'dev',
+            target: 'linux-ktclaw',
+            message: 'Plan the next step',
+            sessionId: 'intercom',
+          }),
         }),
       );
     });
-
-    expect(await screen.findByText('Plan the next step')).toBeInTheDocument();
-    expect(await screen.findByText('Remote reply')).toBeInTheDocument();
-    expect(screen.getByText('context_id: ctx-remote-1')).toBeInTheDocument();
-    expect(screen.getAllByText('task_id: task-remote-1').length).toBeGreaterThan(0);
+    expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
   });
 });

@@ -1,0 +1,225 @@
+import { create } from 'zustand';
+import { hostApiFetch } from '@/lib/host-api';
+
+export type IntercomTransport = 'local' | 'ssh' | 'nats';
+
+export type IntercomRoute = {
+  id: string;
+  displayName: string;
+  host: string;
+  agent: string;
+  transport: IntercomTransport;
+  sessionId: string;
+  enabled: boolean;
+  sshUser: string | null;
+  sshPort: number | null;
+  remoteCommand: string | null;
+  source: 'config' | 'local';
+};
+
+export type IntercomRouteInput = {
+  id: string;
+  displayName?: string;
+  host?: string;
+  agent?: string;
+  transport?: IntercomTransport;
+  sessionId?: string;
+  enabled?: boolean;
+  sshUser?: string;
+  sshPort?: number | null;
+  remoteCommand?: string;
+};
+
+export type IntercomSendInput = {
+  target: string;
+  sender: string;
+  message: string;
+  sessionId?: string;
+};
+
+export type IntercomProtocolInstallResult = {
+  success: true;
+  updated: string[];
+  skipped: string[];
+};
+
+type IntercomState = {
+  routes: IntercomRoute[];
+  localAgents: Array<{ id: string; name: string }>;
+  localHost: string | null;
+  defaultSessionId: string;
+  loading: boolean;
+  saving: boolean;
+  sending: boolean;
+  installingProtocol: boolean;
+  error: string | null;
+  fetchIntercom: (options?: { force?: boolean }) => Promise<void>;
+  upsertRoute: (input: IntercomRouteInput) => Promise<void>;
+  deleteRoute: (routeId: string) => Promise<void>;
+  sendMessage: (input: IntercomSendInput) => Promise<void>;
+  installProtocol: () => Promise<IntercomProtocolInstallResult>;
+  clearError: () => void;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readTransport(value: unknown): IntercomTransport {
+  return value === 'ssh' || value === 'nats' ? value : 'local';
+}
+
+function normalizeRoute(value: unknown): IntercomRoute | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = readString(value.id);
+  const host = readString(value.host);
+  const agent = readString(value.agent);
+  if (!id || !host || !agent) {
+    return null;
+  }
+  return {
+    id,
+    displayName: readString(value.displayName) ?? id,
+    host,
+    agent,
+    transport: readTransport(value.transport),
+    sessionId: readString(value.sessionId) ?? 'intercom',
+    enabled: value.enabled !== false,
+    sshUser: readString(value.sshUser),
+    sshPort: typeof value.sshPort === 'number' && Number.isFinite(value.sshPort) ? value.sshPort : null,
+    remoteCommand: readString(value.remoteCommand),
+    source: value.source === 'config' ? 'config' : 'local',
+  };
+}
+
+function normalizeSnapshot(value: unknown) {
+  const row = isRecord(value) ? value : {};
+  const localAgents = Array.isArray(row.localAgents)
+    ? row.localAgents
+        .map((entry) => {
+          if (!isRecord(entry)) {
+            return null;
+          }
+          const id = readString(entry.id);
+          if (!id) {
+            return null;
+          }
+          return { id, name: readString(entry.name) ?? id };
+        })
+        .filter((entry): entry is { id: string; name: string } => entry !== null)
+    : [];
+
+  return {
+    routes: Array.isArray(row.routes)
+      ? row.routes.map(normalizeRoute).filter((entry): entry is IntercomRoute => entry !== null)
+      : [],
+    localAgents,
+    localHost: readString(row.localHost),
+    defaultSessionId: readString(row.defaultSessionId) ?? 'intercom',
+  };
+}
+
+function normalizeProtocolInstallResult(value: unknown): IntercomProtocolInstallResult {
+  const row = isRecord(value) ? value : {};
+  return {
+    success: true,
+    updated: Array.isArray(row.updated) ? row.updated.map(readString).filter((entry): entry is string => entry !== null) : [],
+    skipped: Array.isArray(row.skipped) ? row.skipped.map(readString).filter((entry): entry is string => entry !== null) : [],
+  };
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export const useIntercomStore = create<IntercomState>((set, get) => ({
+  routes: [],
+  localAgents: [],
+  localHost: null,
+  defaultSessionId: 'intercom',
+  loading: false,
+  saving: false,
+  sending: false,
+  installingProtocol: false,
+  error: null,
+
+  fetchIntercom: async (options) => {
+    if (get().loading && !options?.force) {
+      return;
+    }
+    set({ loading: true, error: null });
+    try {
+      const response = await hostApiFetch('/api/intercom');
+      set({
+        ...normalizeSnapshot(response),
+        loading: false,
+      });
+    } catch (error) {
+      set({ loading: false, error: toErrorMessage(error) });
+    }
+  },
+
+  upsertRoute: async (input) => {
+    set({ saving: true, error: null });
+    try {
+      const response = await hostApiFetch('/api/intercom/routes', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      set({ ...normalizeSnapshot(response), saving: false });
+    } catch (error) {
+      set({ saving: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  deleteRoute: async (routeId) => {
+    set({ saving: true, error: null });
+    try {
+      const response = await hostApiFetch(`/api/intercom/routes/${encodeURIComponent(routeId)}`, {
+        method: 'DELETE',
+      });
+      set({ ...normalizeSnapshot(response), saving: false });
+    } catch (error) {
+      set({ saving: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  sendMessage: async (input) => {
+    set({ sending: true, error: null });
+    try {
+      await hostApiFetch('/api/intercom/send', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      set({ sending: false });
+    } catch (error) {
+      set({ sending: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  installProtocol: async () => {
+    set({ installingProtocol: true, error: null });
+    try {
+      const response = await hostApiFetch('/api/intercom/install-protocol', {
+        method: 'POST',
+      });
+      const result = normalizeProtocolInstallResult(response);
+      set({ installingProtocol: false });
+      return result;
+    } catch (error) {
+      set({ installingProtocol: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  clearError: () => set({ error: null }),
+}));

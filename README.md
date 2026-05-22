@@ -114,9 +114,9 @@ Feishu onboarding now stays inside KTClaw with one integrated wizard for plugin 
 The channel workbench also supports account-scoped management inside the current product shape: you can inspect multiple accounts per channel, switch the default account, maintain account bindings, and resolve delivery targets for channels such as Feishu, WeChat, WeCom, DingTalk, and QQ Bot through a shared backend path.
 Channel-backed conversations are now isolated from the main local chat timeline, the Sidebar shows each configured account instance separately, channel-derived sessions are prefixed in the global session list, and synced conversation items can be renamed or removed from the workbench list without deleting the underlying channel account.
 
-### Remote Instances and A2A Sharing
-KTClaw can connect to other KTClaw/OpenClaw instances through A2A Agent Card URLs, and it can expose this desktop as an inbound A2A endpoint for trusted collaborators.
-Use **Settings -> Remote Instances** to copy **My Agent Card URL**, enable inbound access, choose whether the Gateway is local-only or reachable on the same Wi-Fi/LAN, generate or revoke access keys, and copy the shareable `Authorization: Bearer ...` header. LAN sharing writes `gateway.bind: "lan"` and still requires the OS firewall and network/router to allow the Gateway port. Public internet access is not automatic; use Tailscale Serve/Funnel, a reverse proxy, a tunnel, or explicit port forwarding when you want access beyond the local network.
+### Remote Intercom
+Use **Settings -> Remote Instances** to configure the minimal SSH Intercom path for cross-machine agent control. A Windows KTClaw instance can save a Linux host, SSH user/port, target agent, session id, and remote OpenClaw command, then send a message that runs `openclaw agent --agent <id> --session-id intercom --message ...` on the Linux host.
+A2A Agent Card routes remain in the backend for later work, but the current settings panel keeps that flow hidden so the first usable path is Windows-to-Linux SSH. NATS/JetStream is reserved for a later reliable-queue transport.
 
 ### ⏰ Cron-Based Automation
 Schedule AI tasks to run automatically. Define triggers, set intervals, and let your AI agents work around the clock without manual intervention.

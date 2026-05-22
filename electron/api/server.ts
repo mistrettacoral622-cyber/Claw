@@ -41,6 +41,7 @@ const routeDefinitions: LazyRouteDefinition[] = [
   { prefixes: ['/api/teams'], loader: memoizeRouteLoader('teams', () => import('./routes/teams').then((mod) => mod.handleTeamRoutes)) },
   { prefixes: ['/api/tasks'], loader: memoizeRouteLoader('tasks', () => import('./routes/tasks').then((mod) => mod.handleTaskRoutes)) },
   { prefixes: ['/api/channels'], loader: memoizeRouteLoader('channels', () => import('./routes/channels').then((mod) => mod.handleChannelRoutes)) },
+  { prefixes: ['/api/intercom'], loader: memoizeRouteLoader('intercom', () => import('./routes/intercom').then((mod) => mod.handleIntercomRoutes)) },
   { prefixes: ['/api/remote-instances'], loader: memoizeRouteLoader('remote-instances', () => import('./routes/remote-instances').then((mod) => mod.handleRemoteInstanceRoutes)) },
   { prefixes: ['/api/skills'], loader: memoizeRouteLoader('skills', () => import('./routes/skills').then((mod) => mod.handleSkillRoutes)) },
   { prefixes: ['/api/files'], loader: memoizeRouteLoader('files', () => import('./routes/files').then((mod) => mod.handleFileRoutes)) },

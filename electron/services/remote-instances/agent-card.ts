@@ -60,6 +60,27 @@ function buildRequestHeaders(auth?: RemoteInstanceHeaderAuth): Headers {
   return headers;
 }
 
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = 'cause' in error && error.cause instanceof Error
+      ? ` (${error.cause.message})`
+      : '';
+    return `${error.message}${cause}`;
+  }
+  return String(error);
+}
+
+function formatAgentCardFetchError(url: string, error: unknown, timeoutMs: number): Error {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return new Error(`Timed out after ${timeoutMs}ms while fetching Agent Card from ${url}`);
+  }
+
+  const detail = readErrorMessage(error);
+  return new Error(
+    `Unable to fetch Agent Card from ${url}: ${detail}. Verify the remote Gateway is running, network access is set to LAN or a reachable tunnel, and the firewall allows the Gateway port.`,
+  );
+}
+
 function normalizeSkill(value: unknown): RemoteAgentCardSkillSnapshot | null {
   if (!isRecord(value)) {
     return null;
@@ -149,11 +170,16 @@ export async function fetchAgentCard(options: AgentCardFetchOptions): Promise<Ag
   const startedAt = Date.now();
 
   try {
-    const response = await proxyAwareFetch(options.url, {
-      method: 'GET',
-      headers: buildRequestHeaders(options.auth),
-      signal: controller.signal,
-    });
+    let response: Response;
+    try {
+      response = await proxyAwareFetch(options.url, {
+        method: 'GET',
+        headers: buildRequestHeaders(options.auth),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw formatAgentCardFetchError(options.url, error, timeoutMs);
+    }
 
     const latencyMs = Date.now() - startedAt;
     const httpStatus = response.status;
