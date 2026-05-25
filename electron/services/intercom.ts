@@ -11,6 +11,7 @@ import { withConfigLock } from '../utils/config-mutex';
 import { expandPath, getKTClawConfigDir, getOpenClawDir, getOpenClawEntryPath } from '../utils/paths';
 import { logger } from '../utils/logger';
 import { deleteProviderSecret, getProviderSecret, setProviderSecret } from './secrets/secret-store';
+import { isTextOnlyImageSchemaError } from '../../shared/chat-media-attachments';
 
 export type IntercomTransport = 'local' | 'ssh' | 'nats';
 
@@ -1248,6 +1249,33 @@ function withBundledLinuxOpenClawCommand(route: IntercomRoute): IntercomRoute {
   };
 }
 
+function isIntercomTextOnlyImageSchemaFailure(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return isTextOnlyImageSchemaError(value);
+  }
+  if (value instanceof Error) {
+    const row = value as { stdout?: unknown; stderr?: unknown };
+    return isTextOnlyImageSchemaError([
+      value.message,
+      typeof row.stdout === 'string' ? row.stdout : '',
+      typeof row.stderr === 'string' ? row.stderr : '',
+    ].filter(Boolean).join('\n'));
+  }
+  if (isRecord(value)) {
+    return isTextOnlyImageSchemaError([
+      typeof value.stdout === 'string' ? value.stdout : '',
+      typeof value.stderr === 'string' ? value.stderr : '',
+      typeof value.error === 'string' ? value.error : '',
+    ].filter(Boolean).join('\n'));
+  }
+  return false;
+}
+
+function isIntercomResetCommand(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return normalized === '/new' || normalized === '/reset';
+}
+
 async function resolveIntercomTarget(target: string): Promise<{
   snapshot: IntercomSnapshot;
   target: string;
@@ -1275,50 +1303,68 @@ async function runIntercomRouteMessage(params: {
   commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
 }> {
   const sshPassword = params.route.transport === 'ssh' ? await getIntercomSshPassword(params.route.id) : null;
-  const buildInvocation = (targetRoute: IntercomRoute) => targetRoute.transport === 'ssh' && sshPassword
-    ? {
-        command: 'ssh2',
-        args: [
-          `${resolveSshHostAndUsername(targetRoute).username || userInfo().username}@${resolveSshHostAndUsername(targetRoute).host}`,
-          buildRemoteCommand(targetRoute, params.message, params.sessionId),
-        ],
-      }
-    : targetRoute.transport === 'ssh'
-      ? buildSshCommand(targetRoute, params.message, params.sessionId)
-      : buildLocalCommand(targetRoute, params.message, params.sessionId);
-  const runInvocation = async (targetRoute: IntercomRoute, invocationToRun: ReturnType<typeof buildInvocation>) => (
-    targetRoute.transport === 'ssh' && sshPassword
-      ? runSsh2Command(targetRoute, sshPassword, params.message, params.sessionId)
-      : runIntercomCommand(invocationToRun.command, invocationToRun.args, {
-          cwd: 'cwd' in invocationToRun ? invocationToRun.cwd : undefined,
-          env: 'env' in invocationToRun ? invocationToRun.env : process.env,
-        })
-  );
-
-  let executedRoute = params.route;
-  let invocation = buildInvocation(executedRoute);
-  try {
-    return {
-      route: executedRoute,
-      invocation,
-      commandResult: await runInvocation(executedRoute, invocation),
+  const runMessageOnce = async (message: string, route: IntercomRoute) => {
+    const runForMessage = async (targetRoute: IntercomRoute) => {
+      const invocation = targetRoute.transport === 'ssh' && sshPassword
+        ? {
+            command: 'ssh2',
+            args: [
+              `${resolveSshHostAndUsername(targetRoute).username || userInfo().username}@${resolveSshHostAndUsername(targetRoute).host}`,
+              buildRemoteCommand(targetRoute, message, params.sessionId),
+            ],
+          }
+        : targetRoute.transport === 'ssh'
+          ? buildSshCommand(targetRoute, message, params.sessionId)
+          : buildLocalCommand(targetRoute, message, params.sessionId);
+      const commandResult = targetRoute.transport === 'ssh' && sshPassword
+        ? await runSsh2Command(targetRoute, sshPassword, message, params.sessionId)
+        : await runIntercomCommand(invocation.command, invocation.args, {
+            cwd: 'cwd' in invocation ? invocation.cwd : undefined,
+            env: 'env' in invocation ? invocation.env : process.env,
+          });
+      return { route: targetRoute, invocation, commandResult };
     };
-  } catch (error) {
-    if (!shouldRetryWithBundledLinuxOpenClaw(executedRoute, error)) {
-      throw error;
+
+    try {
+      return await runForMessage(route);
+    } catch (error) {
+      if (!shouldRetryWithBundledLinuxOpenClaw(route, error)) {
+        throw error;
+      }
+      logger.warn('Retrying intercom command with bundled Linux KTClaw OpenClaw entry', {
+        target: params.route.id,
+        host: params.route.host,
+        agent: params.route.agent,
+      });
+      return runForMessage(withBundledLinuxOpenClawCommand(route));
     }
-    logger.warn('Retrying intercom command with bundled Linux KTClaw OpenClaw entry', {
+  };
+
+  try {
+    const firstResult = await runMessageOnce(params.message, params.route);
+    if (isIntercomResetCommand(params.message) || !isIntercomTextOnlyImageSchemaFailure(firstResult.commandResult)) {
+      return firstResult;
+    }
+
+    logger.warn('Intercom session history contains image_url content for a text-only model; resetting remote session and retrying message', {
       target: params.route.id,
       host: params.route.host,
       agent: params.route.agent,
     });
-    executedRoute = withBundledLinuxOpenClawCommand(params.route);
-    invocation = buildInvocation(executedRoute);
-    return {
-      route: executedRoute,
-      invocation,
-      commandResult: await runInvocation(executedRoute, invocation),
-    };
+    const resetResult = await runMessageOnce('/new', firstResult.route);
+    return runMessageOnce(params.message, resetResult.route);
+  } catch (error) {
+    if (isIntercomResetCommand(params.message) || !isIntercomTextOnlyImageSchemaFailure(error)) {
+      throw error;
+    }
+
+    logger.warn('Intercom command failed because session history contains image_url content; resetting remote session and retrying message', {
+      target: params.route.id,
+      host: params.route.host,
+      agent: params.route.agent,
+    });
+    await runMessageOnce('/new', params.route);
+    return runMessageOnce(params.message, params.route);
   }
 }
 

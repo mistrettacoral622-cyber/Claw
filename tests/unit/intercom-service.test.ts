@@ -500,6 +500,44 @@ describe('intercom service', () => {
     expect(retryArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
   });
 
+  it('resets and retries intercom messages when stale session history contains image_url content', async () => {
+    spawnMock
+      .mockReturnValueOnce(createProcessMock({
+        stdout: '400 Failed to deserialize the JSON body into the target type: messages[75]: unknown variant image_url, expected text at line 1 column 197067',
+      }))
+      .mockReturnValueOnce(createProcessMock({ stdout: '{"reset":true}\n' }))
+      .mockReturnValueOnce(createProcessMock({ stdout: '{"ok":true,"message":"你好"}\n' }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: '你好',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      stdout: '{"ok":true,"message":"你好"}',
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(3);
+    const resetArgs = spawnMock.mock.calls[1][1] as string[];
+    const retryArgs = spawnMock.mock.calls[2][1] as string[];
+    expect(resetArgs.at(-1)).toContain("'--message' '/new'");
+    expect(retryArgs.at(-1)).toContain("[from agent dev] 你好");
+  });
+
   it('sends password-backed SSH intercom messages through ssh2', async () => {
     secretStore.set('intercom:ssh:ops', {
       type: 'local',
