@@ -84,6 +84,8 @@ vi.mock('@/lib/host-events', () => ({
 }));
 
 function buildWorkbenchFixtures() {
+  const recentActivityAt = new Date().toISOString();
+
   return {
     capabilities: {
       success: true,
@@ -123,7 +125,7 @@ function buildWorkbenchFixtures() {
           title: '研发中心 DevOps 总群',
           pinned: true,
           syncState: 'synced',
-          latestActivityAt: '2026-03-26T09:05:00.000Z',
+          latestActivityAt: recentActivityAt,
           previewText: '@KTClaw 帮我把慢 SQL 记录拉出来',
           participantSummary: '4 Agent / 12 人类',
           visibleAgentId: 'main',
@@ -136,7 +138,7 @@ function buildWorkbenchFixtures() {
           title: '李明',
           pinned: false,
           syncState: 'synced',
-          latestActivityAt: '2026-03-26T09:04:00.000Z',
+          latestActivityAt: recentActivityAt,
           previewText: '@Main 给我一份构建摘要',
           participantSummary: '机器人私聊',
           visibleAgentId: 'main',
@@ -149,7 +151,7 @@ function buildWorkbenchFixtures() {
           title: '数据分析项目组',
           pinned: false,
           syncState: 'synced',
-          latestActivityAt: '2026-03-26T08:00:00.000Z',
+          latestActivityAt: recentActivityAt,
           previewText: '今天的日报数据需要重算',
           participantSummary: 'KTClaw, DataAnalyst',
           visibleAgentId: 'data-analyst',
@@ -1124,7 +1126,7 @@ describe('Channels sync workbench', () => {
               title: 'Owner Search Result',
               pinned: false,
               syncState: 'synced',
-              latestActivityAt: '2026-03-26T09:03:00.000Z',
+              latestActivityAt: new Date().toISOString(),
               participantSummary: 'found via fallback search',
             },
           ],

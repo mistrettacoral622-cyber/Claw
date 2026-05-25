@@ -5,8 +5,14 @@ import { RemoteInstances } from '@/pages/RemoteInstances';
 import { useIntercomStore } from '@/stores/intercom';
 import { hostApiFetch } from '@/lib/host-api';
 
+const invokeIpcMock = vi.fn();
+
 vi.mock('@/lib/host-api', () => ({
   hostApiFetch: vi.fn(),
+}));
+
+vi.mock('@/lib/api-client', () => ({
+  invokeIpc: (...args: unknown[]) => invokeIpcMock(...args),
 }));
 
 vi.mock('@/lib/toast', () => ({
@@ -61,7 +67,19 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.previewLabel': 'Command preview',
         'remoteInstances.intercom.routeNeedsSave': 'Save route before sending',
         'remoteInstances.intercom.readyToSend': 'Ready to send through SSH',
+        'remoteInstances.intercom.remoteTaskLabel': 'Remote task',
+        'remoteInstances.intercom.attachFiles': 'Attach files',
+        'remoteInstances.intercom.sendTask': 'Send task',
+        'remoteInstances.intercom.screenshot': 'Screenshot',
+        'remoteInstances.intercom.removeAttachment': 'Remove attachment',
+        'remoteInstances.intercom.taskResultLabel': 'task result',
+        'remoteInstances.intercom.transferDetailsLabel': 'transfers',
+        'remoteInstances.intercom.screenshotTaskPrompt': 'Capture a screenshot on the remote machine and return it as an image artifact.',
         'remoteInstances.intercom.send': 'Send',
+        'remoteInstances.intercom.toasts.fileStageFailed': 'Failed to stage files',
+        'remoteInstances.intercom.toasts.taskDelivered': 'Remote task completed',
+        'remoteInstances.intercom.toasts.taskFailed': 'Failed to run remote task',
+        'remoteInstances.intercom.toasts.artifactDownloadFailed': 'Failed to download remote artifacts',
       };
       return table[key] ?? key;
     },
@@ -127,6 +145,7 @@ function renderPage() {
 describe('RemoteInstances page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invokeIpcMock.mockReset();
     resetIntercomStore();
     vi.mocked(hostApiFetch).mockResolvedValue(READY_INTERCOM_RESPONSE);
   });

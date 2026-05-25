@@ -5,8 +5,14 @@ import { RemoteInstances } from '@/pages/RemoteInstances';
 import { useIntercomStore } from '@/stores/intercom';
 import { hostApiFetch } from '@/lib/host-api';
 
+const invokeIpcMock = vi.fn();
+
 vi.mock('@/lib/host-api', () => ({
   hostApiFetch: vi.fn(),
+}));
+
+vi.mock('@/lib/api-client', () => ({
+  invokeIpc: (...args: unknown[]) => invokeIpcMock(...args),
 }));
 
 vi.mock('@/lib/toast', () => ({
@@ -64,10 +70,22 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.exitCodeLabel': 'Exit code',
         'remoteInstances.intercom.durationLabel': 'Duration',
         'remoteInstances.intercom.emptyOutput': '(empty)',
+        'remoteInstances.intercom.remoteTaskLabel': 'Remote task',
+        'remoteInstances.intercom.attachFiles': 'Attach files',
+        'remoteInstances.intercom.sendTask': 'Send task',
+        'remoteInstances.intercom.screenshot': 'Screenshot',
+        'remoteInstances.intercom.removeAttachment': 'Remove attachment',
+        'remoteInstances.intercom.taskResultLabel': 'task result',
+        'remoteInstances.intercom.transferDetailsLabel': 'transfers',
+        'remoteInstances.intercom.screenshotTaskPrompt': 'Capture a screenshot on the remote machine and return it as an image artifact.',
         'remoteInstances.intercom.send': 'Send',
         'remoteInstances.intercom.toasts.messageQueued': 'Message sent to Linux',
         'remoteInstances.intercom.toasts.messageDelivered': `Message delivered (${options?.code ?? 0})`,
         'remoteInstances.intercom.toasts.messageFailed': 'Failed to send message',
+        'remoteInstances.intercom.toasts.fileStageFailed': 'Failed to stage files',
+        'remoteInstances.intercom.toasts.taskDelivered': 'Remote task completed',
+        'remoteInstances.intercom.toasts.taskFailed': 'Failed to run remote task',
+        'remoteInstances.intercom.toasts.artifactDownloadFailed': 'Failed to download remote artifacts',
       };
       return table[key] ?? key;
     },
@@ -142,6 +160,7 @@ function renderPage() {
 describe('RemoteInstances message flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invokeIpcMock.mockReset();
     resetIntercomStore();
     remoteStdout = JSON.stringify({
       content: [
@@ -171,6 +190,73 @@ describe('RemoteInstances message flow', () => {
           stdout: remoteStdout,
           stderr: '',
           durationMs: 123,
+        };
+      }
+      if (path === '/api/intercom/tasks' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return {
+          success: true,
+          queued: false,
+          target: 'linux-ktclaw',
+          sender: 'dev',
+          transport: 'ssh',
+          host: '10.101.208.178',
+          agent: 'zz',
+          sessionId: 'intercom',
+          command: 'ssh',
+          args: [],
+          exitCode: 0,
+          stdout: JSON.stringify({
+            success: true,
+            summary: 'Remote task summary',
+            artifacts: [
+              { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/screen.png', name: 'screen.png', mimeType: 'image/png' },
+            ],
+            logs: 'task logs',
+            error: null,
+          }),
+          stderr: '',
+          durationMs: 123,
+          taskId: body.taskId,
+          task: {
+            type: 'remote_task',
+            taskId: body.taskId,
+            action: body.action,
+            payload: body.payload,
+            return: body.return,
+          },
+          result: {
+            success: true,
+            summary: 'Remote task summary',
+            artifacts: [
+              { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/screen.png', name: 'screen.png', mimeType: 'image/png' },
+            ],
+            logs: 'task logs',
+            error: null,
+          },
+        };
+      }
+      if (path === '/api/intercom/transfers/download' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return {
+          success: true,
+          taskId: body.taskId,
+          transfers: [
+            {
+              id: 'download-1',
+              routeId: 'linux-ktclaw',
+              taskId: body.taskId,
+              direction: 'download',
+              status: 'success',
+              fileName: 'screen.png',
+              localPath: '/tmp/screen.png',
+              remotePath: '~/.ktclaw/intercom/outbox/task-1/screen.png',
+              mimeType: 'image/png',
+              size: 100,
+              durationMs: 10,
+              error: null,
+            },
+          ],
         };
       }
       throw new Error(`Unexpected host api call: ${path} ${init?.method ?? 'GET'}`);
@@ -266,5 +352,41 @@ describe('RemoteInstances message flow', () => {
     expect(await screen.findByText('你好啊')).toBeInTheDocument();
     expect(screen.getByText(/感觉你一直在试探我/)).toBeInTheDocument();
     expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
+  });
+
+  it('sends a structured remote task and renders downloaded artifacts', async () => {
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: 'Inspect the uploaded context' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send task' }));
+
+    await waitFor(() => {
+      expect(hostApiFetch).toHaveBeenCalledWith(
+        '/api/intercom/tasks',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"action":"remote_task"'),
+        }),
+      );
+    });
+    expect(await screen.findByText('Remote task summary')).toBeInTheDocument();
+    expect(screen.getByText('screen.png')).toBeInTheDocument();
+  });
+
+  it('sends screenshot as a remote task action', async () => {
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Screenshot' }));
+
+    await waitFor(() => {
+      const taskCall = vi.mocked(hostApiFetch).mock.calls.find(([path]) => path === '/api/intercom/tasks');
+      expect(taskCall).toBeTruthy();
+      expect(String(taskCall?.[1]?.body)).toContain('"action":"screenshot"');
+      expect(String(taskCall?.[1]?.body)).toContain('"format":"png"');
+    });
   });
 });

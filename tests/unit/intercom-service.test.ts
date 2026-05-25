@@ -13,6 +13,10 @@ const { configStore, ktclawFiles, secretStore, spawnMock, sshClientInstances } =
     handlers: Map<string, (...args: unknown[]) => void>;
     connect: ReturnType<typeof vi.fn>;
     exec: ReturnType<typeof vi.fn>;
+    sftp: ReturnType<typeof vi.fn>;
+    sftpMkdir: ReturnType<typeof vi.fn>;
+    sftpFastPut: ReturnType<typeof vi.fn>;
+    sftpFastGet: ReturnType<typeof vi.fn>;
     end: ReturnType<typeof vi.fn>;
   }>,
 }));
@@ -97,6 +101,23 @@ vi.mock('ssh2', () => ({
         });
         return instance;
       }),
+      sftpMkdir: vi.fn((_path: string, callback: (error?: Error) => void) => {
+        callback();
+      }),
+      sftpFastPut: vi.fn((_localPath: string, _remotePath: string, callback: (error?: Error) => void) => {
+        callback();
+      }),
+      sftpFastGet: vi.fn((_remotePath: string, _localPath: string, callback: (error?: Error) => void) => {
+        callback();
+      }),
+      sftp: vi.fn((callback: (error: Error | undefined, sftp: unknown) => void) => {
+        callback(undefined, {
+          mkdir: instance.sftpMkdir,
+          fastPut: instance.sftpFastPut,
+          fastGet: instance.sftpFastGet,
+        });
+        return instance;
+      }),
       end: vi.fn(() => instance),
       on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
         handlers.set(event, handler);
@@ -146,6 +167,7 @@ vi.mock('node:fs/promises', async () => {
     writeFile: vi.fn(async (filePath: string, data: string) => {
       ktclawFiles.set(String(filePath).replace(/\\/g, '/'), data);
     }),
+    stat: vi.fn(async () => ({ size: 42 })),
   };
 });
 
@@ -521,6 +543,184 @@ describe('intercom service', () => {
       expect.stringContaining("'openclaw' 'agent' '--agent' 'ops'"),
       expect.any(Function),
     );
+  });
+
+  it('builds structured remote task messages and normalizes task results', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: [
+        '[plugins] ready',
+        JSON.stringify({
+          success: true,
+          summary: 'Task completed',
+          artifacts: [
+            { type: 'file', path: '~/.ktclaw/intercom/outbox/task-1/result.md' },
+          ],
+          logs: 'ran task',
+          error: null,
+        }),
+      ].join('\n'),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'inspect_file',
+      payload: { path: '/tmp/report.md' },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      taskId: 'task-1',
+      result: expect.objectContaining({
+        success: true,
+        summary: 'Task completed',
+        logs: 'ran task',
+        artifacts: [
+          expect.objectContaining({
+            type: 'file',
+            path: '~/.ktclaw/intercom/outbox/task-1/result.md',
+          }),
+        ],
+      }),
+    }));
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('remote_task');
+    expect(sshArgs.at(-1)).toContain('"action": "inspect_file"');
+  });
+
+  it('falls back to assistant text when a remote task returns ordinary OpenClaw messages', async () => {
+    const { normalizeIntercomRemoteTaskResult } = await import('@electron/services/intercom');
+
+    expect(normalizeIntercomRemoteTaskResult(JSON.stringify({
+      messages: [
+        { role: 'assistant', content: [{ text: 'I handled it.' }] },
+      ],
+    }))).toEqual({
+      success: true,
+      summary: 'I handled it.',
+      artifacts: [],
+      logs: expect.any(String),
+      error: null,
+    });
+  });
+
+  it('uploads files to the remote intercom inbox over SFTP', async () => {
+    secretStore.set('intercom:ssh:ops', {
+      type: 'local',
+      accountId: 'intercom:ssh:ops',
+      apiKey: 'linux-password',
+    });
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { uploadIntercomFiles } = await import('@electron/services/intercom');
+
+    const result = await uploadIntercomFiles({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      files: [{ localPath: '/tmp/input.txt', fileName: 'input.txt', mimeType: 'text/plain' }],
+    });
+
+    expect(result.transfers[0]).toEqual(expect.objectContaining({
+      direction: 'upload',
+      status: 'success',
+      fileName: 'input.txt',
+      remotePath: '~/.ktclaw/intercom/inbox/dev/task-1/input.txt',
+      localPath: '/tmp/input.txt',
+    }));
+    expect(sshClientInstances[0]?.sftpFastPut).toHaveBeenCalledWith(
+      '/tmp/input.txt',
+      '.ktclaw/intercom/inbox/dev/task-1/input.txt',
+      expect.any(Function),
+    );
+  });
+
+  it('downloads artifacts from the remote outbox into the local artifact cache', async () => {
+    secretStore.set('intercom:ssh:ops', {
+      type: 'local',
+      accountId: 'intercom:ssh:ops',
+      apiKey: 'linux-password',
+    });
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { downloadIntercomArtifacts } = await import('@electron/services/intercom');
+
+    const result = await downloadIntercomArtifacts({
+      target: 'ops',
+      taskId: 'task-1',
+      artifacts: [{ path: '~/.ktclaw/intercom/outbox/task-1/result.png', type: 'image' }],
+    });
+
+    expect(result.transfers[0]).toEqual(expect.objectContaining({
+      direction: 'download',
+      status: 'success',
+      fileName: 'result.png',
+      remotePath: '~/.ktclaw/intercom/outbox/task-1/result.png',
+    }));
+    expect(result.transfers[0]?.localPath.replace(/\\/g, '/')).toBe('/tmp/ktclaw/intercom/artifacts/ops/task-1/result.png');
+    expect(sshClientInstances[0]?.sftpFastGet).toHaveBeenCalledWith(
+      '.ktclaw/intercom/outbox/task-1/result.png',
+      expect.stringContaining('result.png'),
+      expect.any(Function),
+    );
+  });
+
+  it('returns a clear error when SFTP has no saved SSH password', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { uploadIntercomFiles } = await import('@electron/services/intercom');
+
+    await expect(uploadIntercomFiles({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      files: [{ localPath: '/tmp/input.txt' }],
+    })).rejects.toThrow('SFTP requires a saved SSH password for this route');
   });
 
   it('times out intercom commands that never exit', async () => {

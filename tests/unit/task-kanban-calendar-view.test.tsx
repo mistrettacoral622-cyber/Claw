@@ -19,6 +19,8 @@ vi.mock('@/stores/agents', () => ({
 }));
 
 describe('CalendarView', () => {
+  const visibleDeadline = () => new Date().toISOString();
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -34,7 +36,7 @@ describe('CalendarView', () => {
             status: 'todo',
             priority: 'medium',
             isTeamTask: false,
-            deadline: '2026-04-01T00:00:00Z',
+            deadline: visibleDeadline(),
             createdAt: '2026-03-31T00:00:00Z',
             updatedAt: '2026-03-31T00:00:00Z',
             workState: 'idle',
@@ -63,7 +65,7 @@ describe('CalendarView', () => {
         status: 'todo',
         priority: 'medium',
         isTeamTask: false,
-        deadline: '2026-04-01T00:00:00Z',
+        deadline: visibleDeadline(),
         createdAt: '2026-03-31T00:00:00Z',
         updatedAt: '2026-03-31T00:00:00Z',
         workState: 'idle',
@@ -111,7 +113,7 @@ describe('CalendarView', () => {
             isTeamTask: true,
             teamId: 'team1',
             teamName: 'Alpha',
-            deadline: '2026-04-01T00:00:00Z',
+            deadline: visibleDeadline(),
             createdAt: '2026-03-31T00:00:00Z',
             updatedAt: '2026-03-31T00:00:00Z',
             workState: 'idle',
@@ -142,7 +144,7 @@ describe('CalendarView', () => {
             status: 'todo',
             priority: 'medium',
             isTeamTask: false,
-            deadline: '2026-04-01T00:00:00Z',
+            deadline: visibleDeadline(),
             createdAt: '2026-03-31T00:00:00Z',
             updatedAt: '2026-03-31T00:00:00Z',
             workState: 'idle',

@@ -7,6 +7,9 @@ const getIntercomSnapshotMock = vi.fn();
 const upsertIntercomRouteMock = vi.fn();
 const deleteIntercomRouteMock = vi.fn();
 const sendIntercomMessageMock = vi.fn();
+const sendIntercomTaskMock = vi.fn();
+const uploadIntercomFilesMock = vi.fn();
+const downloadIntercomArtifactsMock = vi.fn();
 const installIntercomProtocolMock = vi.fn();
 const getIntercomHostReadinessMock = vi.fn();
 const prepareIntercomHostMock = vi.fn();
@@ -22,6 +25,9 @@ vi.mock('@electron/services/intercom', () => ({
   upsertIntercomRoute: (...args: unknown[]) => upsertIntercomRouteMock(...args),
   deleteIntercomRoute: (...args: unknown[]) => deleteIntercomRouteMock(...args),
   sendIntercomMessage: (...args: unknown[]) => sendIntercomMessageMock(...args),
+  sendIntercomTask: (...args: unknown[]) => sendIntercomTaskMock(...args),
+  uploadIntercomFiles: (...args: unknown[]) => uploadIntercomFilesMock(...args),
+  downloadIntercomArtifacts: (...args: unknown[]) => downloadIntercomArtifactsMock(...args),
   installIntercomProtocol: (...args: unknown[]) => installIntercomProtocolMock(...args),
   prepareIntercomHost: (...args: unknown[]) => prepareIntercomHostMock(...args),
 }));
@@ -173,6 +179,113 @@ describe('intercom routes', () => {
       stdout: '',
       stderr: 'ssh failed',
       durationMs: 42,
+    });
+  });
+
+  it('sends a structured remote task through intercom', async () => {
+    parseJsonBodyMock.mockResolvedValue({
+      target: 'ops',
+      sender: 'dev',
+      action: 'inspect_file',
+      payload: { path: '/tmp/report.md' },
+    });
+    sendIntercomTaskMock.mockResolvedValue({
+      success: true,
+      taskId: 'task-1',
+      result: {
+        success: true,
+        summary: 'done',
+        artifacts: [],
+        logs: 'ok',
+        error: null,
+      },
+    });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/tasks'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(sendIntercomTaskMock).toHaveBeenCalledWith({
+      target: 'ops',
+      sender: 'dev',
+      action: 'inspect_file',
+      payload: { path: '/tmp/report.md' },
+    });
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      taskId: 'task-1',
+      result: {
+        success: true,
+        summary: 'done',
+        artifacts: [],
+        logs: 'ok',
+        error: null,
+      },
+    });
+  });
+
+  it('exposes intercom file upload transfers', async () => {
+    parseJsonBodyMock.mockResolvedValue({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      files: [{ localPath: '/tmp/a.txt' }],
+    });
+    uploadIntercomFilesMock.mockResolvedValue({ success: true, taskId: 'task-1', transfers: [{ remotePath: '~/.ktclaw/intercom/inbox/dev/task-1/a.txt' }] });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/transfers/upload'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(uploadIntercomFilesMock).toHaveBeenCalledWith({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      files: [{ localPath: '/tmp/a.txt' }],
+    });
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      taskId: 'task-1',
+      transfers: [{ remotePath: '~/.ktclaw/intercom/inbox/dev/task-1/a.txt' }],
+    });
+  });
+
+  it('exposes intercom artifact download transfers', async () => {
+    parseJsonBodyMock.mockResolvedValue({
+      target: 'ops',
+      taskId: 'task-1',
+      artifacts: [{ path: '~/.ktclaw/intercom/outbox/task-1/result.png' }],
+    });
+    downloadIntercomArtifactsMock.mockResolvedValue({ success: true, taskId: 'task-1', transfers: [{ localPath: '/tmp/result.png' }] });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/transfers/download'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(downloadIntercomArtifactsMock).toHaveBeenCalledWith({
+      target: 'ops',
+      taskId: 'task-1',
+      artifacts: [{ path: '~/.ktclaw/intercom/outbox/task-1/result.png' }],
+    });
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      taskId: 'task-1',
+      transfers: [{ localPath: '/tmp/result.png' }],
     });
   });
 

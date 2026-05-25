@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import {
   CheckCircle2,
+  Camera,
   CircleDot,
   ChevronDown,
+  FileText,
   Loader2,
   MessageSquareText,
+  Paperclip,
   Plus,
   RefreshCcw,
   Save,
@@ -29,12 +32,17 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
+import { hostApiFetch } from '@/lib/host-api';
+import { invokeIpc } from '@/lib/api-client';
 import { toast } from '@/lib/toast';
-import type { RawMessage } from '@/stores/chat';
+import type { AttachedFileMeta, RawMessage } from '@/stores/chat';
 import {
   useIntercomStore,
+  type IntercomRemoteTaskArtifact,
   type IntercomSendResult,
   type IntercomRoute,
+  type IntercomTaskSendResult,
+  type IntercomTransferRecord,
 } from '@/stores/intercom';
 import {
   buildSshPreview,
@@ -53,6 +61,18 @@ type MessageDraft = {
   message: string;
 };
 
+type StagedRemoteFile = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  stagedPath: string;
+  preview: string | null;
+  status: 'staging' | 'ready' | 'uploading' | 'uploaded' | 'error';
+  remotePath?: string;
+  error?: string;
+};
+
 type IntercomRunDetail = {
   id: string;
   target: string;
@@ -62,6 +82,8 @@ type IntercomRunDetail = {
   commandPreview: string;
   stderr: string;
   stdout: string;
+  taskResult?: IntercomTaskSendResult['result'];
+  transfers?: IntercomTransferRecord[];
 };
 
 type IntercomConversation = {
@@ -104,6 +126,19 @@ function createRunDetail(result: IntercomSendResult, id: string, commandPreview:
   };
 }
 
+function createTaskRunDetail(
+  result: IntercomTaskSendResult,
+  id: string,
+  commandPreview: string,
+  transfers: IntercomTransferRecord[],
+): IntercomRunDetail {
+  return {
+    ...createRunDetail(result, id, commandPreview),
+    taskResult: result.result,
+    transfers,
+  };
+}
+
 function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): RawMessage[] {
   const messages = extractIntercomReplyMessages(result.stdout);
   if (messages.length > 0) {
@@ -117,6 +152,69 @@ function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): R
     return [createIntercomMessage('assistant', result.stderr.trim(), `${idPrefix}-assistant-error`)];
   }
   return [];
+}
+
+function buildTaskAssistantMessage(
+  result: IntercomTaskSendResult,
+  downloadedTransfers: IntercomTransferRecord[],
+  idPrefix: string,
+): RawMessage {
+  const attachments: AttachedFileMeta[] = downloadedTransfers
+    .filter((transfer) => transfer.status === 'success' && transfer.localPath)
+    .map((transfer) => ({
+      fileName: transfer.fileName,
+      mimeType: transfer.mimeType || 'application/octet-stream',
+      fileSize: transfer.size || 0,
+      preview: null,
+      filePath: transfer.localPath,
+    }));
+  return {
+    id: `${idPrefix}-task-result`,
+    role: 'assistant',
+    content: result.result.summary
+      || result.result.error
+      || (result.result.success ? 'Remote task completed.' : 'Remote task failed.'),
+    isError: !result.result.success,
+    _attachedFiles: attachments.length > 0 ? attachments : undefined,
+  };
+}
+
+function makeTaskId(routeId: string): string {
+  return `task-${routeIdPart(routeId, 'route')}-${Date.now().toString(36)}`;
+}
+
+async function stageDialogFiles(): Promise<StagedRemoteFile[]> {
+  const result = await invokeIpc<{ canceled: boolean; filePaths?: string[] }>('dialog:open', {
+    properties: ['openFile', 'multiSelections'],
+  });
+  if (result.canceled || !result.filePaths?.length) {
+    return [];
+  }
+
+  return hostApiFetch<Array<{
+    id: string;
+    fileName: string;
+    mimeType: string;
+    fileSize: number;
+    stagedPath: string;
+    preview: string | null;
+  }>>('/api/files/stage-paths', {
+    method: 'POST',
+    body: JSON.stringify({ filePaths: result.filePaths }),
+  }).then((files) => files.map((file) => ({
+    ...file,
+    status: 'ready' as const,
+  })));
+}
+
+function artifactToDownloadInput(artifact: IntercomRemoteTaskArtifact) {
+  return {
+    path: artifact.path,
+    type: artifact.type,
+    name: artifact.name,
+    mimeType: artifact.mimeType,
+    size: artifact.size,
+  };
 }
 
 function routeIdPart(value: string, fallback: string): string {
@@ -159,6 +257,9 @@ export function IntercomControlConsole() {
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
   const upsertRoute = useIntercomStore((state) => state.upsertRoute);
   const sendMessage = useIntercomStore((state) => state.sendMessage);
+  const sendTask = useIntercomStore((state) => state.sendTask);
+  const uploadFiles = useIntercomStore((state) => state.uploadFiles);
+  const downloadArtifacts = useIntercomStore((state) => state.downloadArtifacts);
   const installProtocol = useIntercomStore((state) => state.installProtocol);
 
   const sshRoutes = useMemo(
@@ -175,6 +276,7 @@ export function IntercomControlConsole() {
     sender: '',
     message: '',
   });
+  const [stagedFiles, setStagedFiles] = useState<StagedRemoteFile[]>([]);
   const [conversations, setConversations] = useState<Record<string, IntercomConversation>>({});
   const [detailsOpen, setDetailsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -233,6 +335,11 @@ export function IntercomControlConsole() {
     Boolean(messageDraft.sender.trim()) &&
     Boolean(selectedRoute) &&
     Boolean(messageDraft.message.trim());
+  const canSendTask =
+    !sending &&
+    Boolean(messageDraft.sender.trim()) &&
+    Boolean(selectedRoute) &&
+    (Boolean(messageDraft.message.trim()) || stagedFiles.some((file) => file.status === 'ready' || file.status === 'uploaded'));
 
   const openNewRouteConfig = () => {
     setRouteDraft(emptyIntercomRouteDraft());
@@ -346,6 +453,156 @@ export function IntercomControlConsole() {
         };
       });
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed'));
+    }
+  };
+
+  const handlePickFiles = async () => {
+    try {
+      const files = await stageDialogFiles();
+      if (files.length === 0) {
+        return;
+      }
+      setStagedFiles((current) => [...current, ...files]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.fileStageFailed'));
+    }
+  };
+
+  const handleSendTask = async (options?: { screenshot?: boolean }) => {
+    if (!selectedRoute) {
+      toast.error(t('remoteInstances.intercom.routeNeedsSave'));
+      return;
+    }
+
+    const routeId = selectedRoute.id;
+    const sender = messageDraft.sender.trim();
+    const taskId = makeTaskId(routeId);
+    const taskText = options?.screenshot
+      ? t('remoteInstances.intercom.screenshotTaskPrompt')
+      : messageDraft.message.trim();
+    if (!taskText && stagedFiles.length === 0 && !options?.screenshot) {
+      return;
+    }
+
+    messageSeqRef.current += 1;
+    const messageId = `${routeId}-${messageSeqRef.current}`;
+    setConversations((current) => {
+      const conversation = current[routeId] ?? { messages: [], runs: [] };
+      return {
+        ...current,
+        [routeId]: {
+          ...conversation,
+          messages: [
+            ...conversation.messages,
+            createIntercomMessage('user', taskText || t('remoteInstances.intercom.remoteTaskLabel'), `${messageId}-user`),
+          ],
+        },
+      };
+    });
+
+    let uploadedTransfers: IntercomTransferRecord[] = [];
+    try {
+      const readyFiles = stagedFiles.filter((file) => file.status === 'ready' || file.status === 'uploaded');
+      if (readyFiles.length > 0) {
+        setStagedFiles((current) => current.map((file) => readyFiles.some((ready) => ready.id === file.id)
+          ? { ...file, status: 'uploading' as const }
+          : file));
+        uploadedTransfers = await uploadFiles({
+          target: routeId,
+          sender,
+          taskId,
+          files: readyFiles.map((file) => ({
+            localPath: file.stagedPath,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            size: file.fileSize,
+          })),
+        });
+        setStagedFiles((current) => current.map((file) => {
+          const transfer = uploadedTransfers.find((entry) => entry.fileName === file.fileName);
+          return transfer
+            ? { ...file, status: 'uploaded' as const, remotePath: transfer.remotePath }
+            : file;
+        }));
+      }
+
+      const outbox = `~/.ktclaw/intercom/outbox/${taskId}/`;
+      const action = options?.screenshot ? 'screenshot' : 'remote_task';
+      const payload = options?.screenshot
+        ? { outbox, format: 'png' }
+        : {
+            instruction: taskText,
+            inboxFiles: uploadedTransfers.map((transfer) => ({
+              name: transfer.fileName,
+              path: transfer.remotePath,
+              mimeType: transfer.mimeType,
+              size: transfer.size,
+            })),
+            outbox,
+          };
+      const result = await sendTask({
+        target: routeId,
+        sender,
+        taskId,
+        action,
+        payload,
+        return: ['summary', 'artifacts', 'logs'],
+        sessionId: selectedRoute.sessionId || DEFAULT_INTERCOM_SESSION_ID,
+      });
+      const downloadedTransfers = result.result.artifacts.length > 0
+        ? await downloadArtifacts({
+            target: routeId,
+            taskId,
+            artifacts: result.result.artifacts.map(artifactToDownloadInput),
+          }).catch((error) => {
+            toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.artifactDownloadFailed'));
+            return [] as IntercomTransferRecord[];
+          })
+        : [];
+      setConversations((current) => {
+        const conversation = current[routeId] ?? { messages: [], runs: [] };
+        return {
+          ...current,
+          [routeId]: {
+            messages: [
+              ...conversation.messages,
+              buildTaskAssistantMessage(result, downloadedTransfers, messageId),
+            ],
+            runs: [
+              ...conversation.runs,
+              createTaskRunDetail(
+                result,
+                `${messageId}-run`,
+                buildSshPreview(previewDraft, JSON.stringify(result.task), sender),
+                [...uploadedTransfers, ...downloadedTransfers],
+              ),
+            ],
+          },
+        };
+      });
+      setMessageDraft((current) => ({ ...current, message: '' }));
+      setStagedFiles([]);
+      setDetailsOpen(false);
+      toast.success(t('remoteInstances.intercom.toasts.taskDelivered'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.taskFailed');
+      setStagedFiles((current) => current.map((file) => (
+        file.status === 'uploading' ? { ...file, status: 'error' as const, error: message } : file
+      )));
+      setConversations((current) => {
+        const conversation = current[routeId] ?? { messages: [], runs: [] };
+        return {
+          ...current,
+          [routeId]: {
+            ...conversation,
+            messages: [
+              ...conversation.messages,
+              createIntercomMessage('assistant', message, `${messageId}-error`),
+            ],
+          },
+        };
+      });
+      toast.error(message);
     }
   };
 
@@ -589,6 +846,35 @@ export function IntercomControlConsole() {
                           </pre>
                         </div>
                       ) : null}
+                      {latestRun.taskResult ? (
+                        <div>
+                          <p className="font-medium uppercase tracking-[0.04em]">
+                            {t('remoteInstances.intercom.taskResultLabel')}
+                          </p>
+                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#f8fafc] px-3 py-2 font-mono text-[10px] leading-4 text-[#0f172a] dark:bg-background dark:text-foreground">
+                            {JSON.stringify(latestRun.taskResult, null, 2)}
+                          </pre>
+                        </div>
+                      ) : null}
+                      {latestRun.transfers?.length ? (
+                        <div>
+                          <p className="font-medium uppercase tracking-[0.04em]">
+                            {t('remoteInstances.intercom.transferDetailsLabel')}
+                          </p>
+                          <div className="mt-1 space-y-1">
+                            {latestRun.transfers.map((transfer) => (
+                              <div key={transfer.id} className="flex items-center justify-between gap-3 rounded-lg bg-[#f8fafc] px-3 py-2 dark:bg-background">
+                                <span className="min-w-0 truncate">
+                                  {transfer.direction} / {transfer.fileName}
+                                </span>
+                                <span className={transfer.status === 'success' ? 'text-emerald-600' : 'text-red-600'}>
+                                  {transfer.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -633,6 +919,70 @@ export function IntercomControlConsole() {
                       : t('remoteInstances.intercom.routeNeedsSave')}
                   </span>
                 </div>
+              </div>
+
+              {stagedFiles.length > 0 ? (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {stagedFiles.map((file) => (
+                    <div
+                      key={file.id}
+                      className="flex max-w-[220px] items-center gap-2 rounded-lg border border-black/10 bg-[#f8fafc] px-3 py-2 text-[12px] text-[#0f172a] dark:border-white/10 dark:bg-background dark:text-foreground"
+                      title={file.remotePath || file.stagedPath}
+                    >
+                      {file.status === 'uploading' || file.status === 'staging'
+                        ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#64748b]" />
+                        : <FileText className="h-4 w-4 shrink-0 text-[#64748b]" />}
+                      <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+                      <span className={file.status === 'error' ? 'text-red-600' : 'text-[#64748b] dark:text-muted-foreground'}>
+                        {file.status}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-[#64748b] hover:text-red-600"
+                        aria-label={t('remoteInstances.intercom.removeAttachment')}
+                        onClick={() => setStagedFiles((current) => current.filter((entry) => entry.id !== file.id))}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void handlePickFiles()}
+                  disabled={!selectedRoute || sending}
+                >
+                  <Paperclip className="h-4 w-4" />
+                  {t('remoteInstances.intercom.attachFiles')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void handleSendTask()}
+                  disabled={!canSendTask}
+                >
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                  {t('remoteInstances.intercom.sendTask')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void handleSendTask({ screenshot: true })}
+                  disabled={!selectedRoute || sending}
+                >
+                  <Camera className="h-4 w-4" />
+                  {t('remoteInstances.intercom.screenshot')}
+                </Button>
               </div>
 
               <div className="flex items-end gap-3 rounded-[22px] border border-black/10 bg-[#f7f7f9] px-4 py-3 shadow-[0_4px_18px_rgba(15,23,42,0.06)] focus-within:border-[#0a84ff]/50 dark:border-white/10 dark:bg-background">

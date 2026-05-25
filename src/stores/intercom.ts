@@ -102,6 +102,80 @@ export type IntercomSendResult = {
   durationMs: number | null;
 };
 
+export type IntercomRemoteTaskReturnChannel = 'summary' | 'artifacts' | 'logs';
+
+export type IntercomRemoteTaskArtifact = {
+  type: 'file' | 'image' | 'directory' | 'archive' | 'text';
+  path: string;
+  name?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+export type IntercomRemoteTaskResult = {
+  success: boolean;
+  summary: string;
+  artifacts: IntercomRemoteTaskArtifact[];
+  logs: string;
+  error: string | null;
+};
+
+export type IntercomRemoteTaskRequest = {
+  type: 'remote_task';
+  taskId: string;
+  action: string;
+  payload: Record<string, unknown>;
+  return: IntercomRemoteTaskReturnChannel[];
+};
+
+export type IntercomTaskSendInput = {
+  target: string;
+  sender: string;
+  action: string;
+  payload?: Record<string, unknown>;
+  taskId?: string;
+  return?: IntercomRemoteTaskReturnChannel[];
+  sessionId?: string;
+};
+
+export type IntercomTaskSendResult = IntercomSendResult & {
+  taskId: string;
+  task: IntercomRemoteTaskRequest;
+  result: IntercomRemoteTaskResult;
+};
+
+export type IntercomTransferStatus = 'queued' | 'running' | 'success' | 'error';
+
+export type IntercomTransferRecord = {
+  id: string;
+  routeId: string;
+  taskId: string;
+  direction: 'upload' | 'download';
+  status: IntercomTransferStatus;
+  fileName: string;
+  localPath?: string;
+  remotePath: string;
+  mimeType?: string;
+  size?: number;
+  durationMs: number;
+  error: string | null;
+};
+
+export type IntercomUploadFileInput = {
+  localPath: string;
+  fileName?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+export type IntercomDownloadArtifactInput = {
+  path: string;
+  type?: IntercomRemoteTaskArtifact['type'];
+  name?: string;
+  mimeType?: string;
+  size?: number;
+};
+
 export type IntercomProtocolInstallResult = {
   success: true;
   updated: string[];
@@ -121,6 +195,8 @@ type IntercomState = {
   preparingHost: boolean;
   error: string | null;
   lastSendResult: IntercomSendResult | null;
+  lastTaskResult: IntercomTaskSendResult | null;
+  transfersByTask: Record<string, IntercomTransferRecord[]>;
   hostReadiness: IntercomHostReadiness | null;
   fetchIntercom: (options?: { force?: boolean }) => Promise<void>;
   fetchHostReadiness: () => Promise<void>;
@@ -128,6 +204,18 @@ type IntercomState = {
   upsertRoute: (input: IntercomRouteInput) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   sendMessage: (input: IntercomSendInput) => Promise<IntercomSendResult>;
+  sendTask: (input: IntercomTaskSendInput) => Promise<IntercomTaskSendResult>;
+  uploadFiles: (input: {
+    target: string;
+    sender: string;
+    taskId: string;
+    files: IntercomUploadFileInput[];
+  }) => Promise<IntercomTransferRecord[]>;
+  downloadArtifacts: (input: {
+    target: string;
+    taskId: string;
+    artifacts: IntercomDownloadArtifactInput[];
+  }) => Promise<IntercomTransferRecord[]>;
   installProtocol: () => Promise<IntercomProtocolInstallResult>;
   clearError: () => void;
 };
@@ -341,6 +429,120 @@ function normalizeSendResult(value: unknown): IntercomSendResult {
   };
 }
 
+function readTaskArtifactType(value: unknown): IntercomRemoteTaskArtifact['type'] {
+  return value === 'image'
+    || value === 'directory'
+    || value === 'archive'
+    || value === 'text'
+    || value === 'file'
+    ? value
+    : 'file';
+}
+
+function normalizeTaskArtifact(value: unknown): IntercomRemoteTaskArtifact | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const path = readString(value.path);
+  if (!path) {
+    return null;
+  }
+  return {
+    type: readTaskArtifactType(value.type),
+    path,
+    name: readString(value.name) ?? undefined,
+    mimeType: readString(value.mimeType) ?? undefined,
+    size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : undefined,
+  };
+}
+
+function normalizeTaskResult(value: unknown): IntercomRemoteTaskResult {
+  const row = isRecord(value) ? value : {};
+  return {
+    success: row.success !== false,
+    summary: readString(row.summary) ?? '',
+    artifacts: Array.isArray(row.artifacts)
+      ? row.artifacts.map(normalizeTaskArtifact).filter((entry): entry is IntercomRemoteTaskArtifact => entry !== null)
+      : [],
+    logs: readString(row.logs) ?? '',
+    error: readString(row.error),
+  };
+}
+
+function normalizeTaskRequest(value: unknown): IntercomRemoteTaskRequest {
+  const row = isRecord(value) ? value : {};
+  return {
+    type: 'remote_task',
+    taskId: readString(row.taskId) ?? '',
+    action: readString(row.action) ?? '',
+    payload: isRecord(row.payload) ? row.payload : {},
+    return: Array.isArray(row.return)
+      ? row.return.filter((entry): entry is IntercomRemoteTaskReturnChannel => (
+          entry === 'summary' || entry === 'artifacts' || entry === 'logs'
+        ))
+      : ['summary', 'artifacts', 'logs'],
+  };
+}
+
+function normalizeTaskSendResult(value: unknown): IntercomTaskSendResult {
+  const row = isRecord(value) ? value : {};
+  return {
+    ...normalizeSendResult(row),
+    taskId: readString(row.taskId) ?? readString(isRecord(row.task) ? row.task.taskId : null) ?? '',
+    task: normalizeTaskRequest(row.task),
+    result: normalizeTaskResult(row.result),
+  };
+}
+
+function readTransferDirection(value: unknown): IntercomTransferRecord['direction'] {
+  return value === 'download' ? 'download' : 'upload';
+}
+
+function readTransferStatus(value: unknown): IntercomTransferStatus {
+  return value === 'queued' || value === 'running' || value === 'success' || value === 'error'
+    ? value
+    : 'success';
+}
+
+function normalizeTransferRecord(value: unknown): IntercomTransferRecord | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const taskId = readString(value.taskId);
+  const remotePath = readString(value.remotePath);
+  if (!taskId || !remotePath) {
+    return null;
+  }
+  return {
+    id: readString(value.id) ?? `${taskId}:${remotePath}`,
+    routeId: readString(value.routeId) ?? '',
+    taskId,
+    direction: readTransferDirection(value.direction),
+    status: readTransferStatus(value.status),
+    fileName: readString(value.fileName) ?? remotePath.split(/[\\/]/).pop() ?? 'file',
+    localPath: readString(value.localPath) ?? undefined,
+    remotePath,
+    mimeType: readString(value.mimeType) ?? undefined,
+    size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : undefined,
+    durationMs: typeof value.durationMs === 'number' && Number.isFinite(value.durationMs) ? value.durationMs : 0,
+    error: readString(value.error),
+  };
+}
+
+function appendTransfers(
+  current: Record<string, IntercomTransferRecord[]>,
+  taskId: string,
+  records: IntercomTransferRecord[],
+): Record<string, IntercomTransferRecord[]> {
+  return {
+    ...current,
+    [taskId]: [
+      ...(current[taskId] ?? []),
+      ...records,
+    ],
+  };
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -366,6 +568,8 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   preparingHost: false,
   error: null,
   lastSendResult: null,
+  lastTaskResult: null,
+  transfersByTask: {},
   hostReadiness: null,
 
   fetchIntercom: async (options) => {
@@ -452,6 +656,141 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
         error: toErrorMessage(error),
         lastSendResult: failedResult.success === false ? failedResult : null,
       });
+      throw error;
+    }
+  },
+
+  sendTask: async (input) => {
+    set({ sending: true, error: null, lastTaskResult: null });
+    try {
+      const response = await hostApiFetch('/api/intercom/tasks', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      const result = normalizeTaskSendResult(response);
+      set({ sending: false, lastTaskResult: result });
+      return result;
+    } catch (error) {
+      set({
+        sending: false,
+        error: toErrorMessage(error),
+        lastTaskResult: null,
+      });
+      throw error;
+    }
+  },
+
+  uploadFiles: async (input) => {
+    const queued = input.files.map((file) => ({
+      id: `${input.taskId}:upload:${file.localPath}`,
+      routeId: input.target,
+      taskId: input.taskId,
+      direction: 'upload' as const,
+      status: 'running' as const,
+      fileName: file.fileName ?? file.localPath.split(/[\\/]/).pop() ?? 'file',
+      localPath: file.localPath,
+      remotePath: '',
+      mimeType: file.mimeType,
+      size: file.size,
+      durationMs: 0,
+      error: null,
+    }));
+    set((state) => ({
+      error: null,
+      transfersByTask: appendTransfers(state.transfersByTask, input.taskId, queued),
+    }));
+    try {
+      const response = await hostApiFetch('/api/intercom/transfers/upload', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      const row = isRecord(response) ? response : {};
+      const records = Array.isArray(row.transfers)
+        ? row.transfers.map(normalizeTransferRecord).filter((entry): entry is IntercomTransferRecord => entry !== null)
+        : [];
+      set((state) => ({
+        transfersByTask: {
+          ...state.transfersByTask,
+          [input.taskId]: [
+            ...(state.transfersByTask[input.taskId] ?? []).filter((entry) => !queued.some((queuedEntry) => queuedEntry.id === entry.id)),
+            ...records,
+          ],
+        },
+      }));
+      return records;
+    } catch (error) {
+      const failed = queued.map((record) => ({
+        ...record,
+        status: 'error' as const,
+        error: toErrorMessage(error),
+      }));
+      set((state) => ({
+        error: toErrorMessage(error),
+        transfersByTask: {
+          ...state.transfersByTask,
+          [input.taskId]: [
+            ...(state.transfersByTask[input.taskId] ?? []).filter((entry) => !queued.some((queuedEntry) => queuedEntry.id === entry.id)),
+            ...failed,
+          ],
+        },
+      }));
+      throw error;
+    }
+  },
+
+  downloadArtifacts: async (input) => {
+    const queued = input.artifacts.map((artifact) => ({
+      id: `${input.taskId}:download:${artifact.path}`,
+      routeId: input.target,
+      taskId: input.taskId,
+      direction: 'download' as const,
+      status: 'running' as const,
+      fileName: artifact.name ?? artifact.path.split(/[\\/]/).pop() ?? 'artifact',
+      remotePath: artifact.path,
+      mimeType: artifact.mimeType,
+      size: artifact.size,
+      durationMs: 0,
+      error: null,
+    }));
+    set((state) => ({
+      error: null,
+      transfersByTask: appendTransfers(state.transfersByTask, input.taskId, queued),
+    }));
+    try {
+      const response = await hostApiFetch('/api/intercom/transfers/download', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      const row = isRecord(response) ? response : {};
+      const records = Array.isArray(row.transfers)
+        ? row.transfers.map(normalizeTransferRecord).filter((entry): entry is IntercomTransferRecord => entry !== null)
+        : [];
+      set((state) => ({
+        transfersByTask: {
+          ...state.transfersByTask,
+          [input.taskId]: [
+            ...(state.transfersByTask[input.taskId] ?? []).filter((entry) => !queued.some((queuedEntry) => queuedEntry.id === entry.id)),
+            ...records,
+          ],
+        },
+      }));
+      return records;
+    } catch (error) {
+      const failed = queued.map((record) => ({
+        ...record,
+        status: 'error' as const,
+        error: toErrorMessage(error),
+      }));
+      set((state) => ({
+        error: toErrorMessage(error),
+        transfersByTask: {
+          ...state.transfersByTask,
+          [input.taskId]: [
+            ...(state.transfersByTask[input.taskId] ?? []).filter((entry) => !queued.some((queuedEntry) => queuedEntry.id === entry.id)),
+            ...failed,
+          ],
+        },
+      }));
       throw error;
     }
   },

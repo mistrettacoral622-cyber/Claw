@@ -239,10 +239,9 @@ describe('TeamOverview page', () => {
 
     await waitFor(() => {
       expect(teamsStoreState.fetchTeams).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('create-team-zone')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('agent-panel')).not.toBeInTheDocument();
     });
-
-    expect(screen.queryByTestId('create-team-zone')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('agent-panel')).not.toBeInTheDocument();
   });
 
   it('wires the grid delete callback to the teams store', async () => {
