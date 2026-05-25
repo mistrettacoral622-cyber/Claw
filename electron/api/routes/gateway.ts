@@ -5,6 +5,12 @@ import { buildOpenClawControlUiUrl } from '../../utils/openclaw-control-ui';
 import { isOutboundMediaPath } from '../../utils/outbound-media';
 import { isGeneratedMediaPath } from '../../utils/generated-media';
 import { appendDispatchHints } from '../../../shared/chat-dispatch-hints';
+import {
+  appendMediaReferences,
+  buildMediaReference,
+  isTextOnlyImageSchemaError,
+  isVisionMimeType,
+} from '../../../shared/chat-media-attachments';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 
@@ -87,9 +93,6 @@ export async function handleGatewayRoutes(
         idempotencyKey: string;
         media?: Array<{ filePath: string; mimeType: string; fileName: string }>;
       }>(req);
-      const VISION_MIME_TYPES = new Set([
-        'image/png', 'image/jpeg', 'image/bmp', 'image/webp',
-      ]);
       const imageAttachments: Array<{ content: string; mimeType: string; fileName: string }> = [];
       const fileReferences: string[] = [];
       if (body.media && body.media.length > 0) {
@@ -100,10 +103,9 @@ export async function handleGatewayRoutes(
         }
         const fsP = await import('node:fs/promises');
         for (const m of body.media) {
-          const mediaReference =
-            `[media attached: ${m.filePath} (${m.mimeType}) | ${m.filePath}]`;
+          const mediaReference = buildMediaReference(m);
 
-          if (VISION_MIME_TYPES.has(m.mimeType)) {
+          if (isVisionMimeType(m.mimeType)) {
             const fileBuffer = await fsP.readFile(m.filePath);
             imageAttachments.push({
               content: fileBuffer.toString('base64'),
@@ -144,7 +146,23 @@ export async function handleGatewayRoutes(
       if (imageAttachments.length > 0) {
         rpcParams.attachments = imageAttachments;
       }
-      const result = await ctx.gatewayManager.rpc('chat.send', rpcParams, 120000);
+      let result: unknown;
+      try {
+        result = await ctx.gatewayManager.rpc('chat.send', rpcParams, 120000);
+      } catch (error) {
+        if (imageAttachments.length === 0 || !isTextOnlyImageSchemaError(error)) {
+          throw error;
+        }
+
+        const fallbackVisionMedia = body.media?.filter((item) => isVisionMimeType(item.mimeType)) ?? [];
+        const fallbackRpcParams: Record<string, unknown> = {
+          ...rpcParams,
+          message: appendMediaReferences(message, fallbackVisionMedia),
+          idempotencyKey: `${body.idempotencyKey}:text-only-media-fallback`,
+        };
+        delete fallbackRpcParams.attachments;
+        result = await ctx.gatewayManager.rpc('chat.send', fallbackRpcParams, 120000);
+      }
       sendJson(res, 200, { success: true, result });
     } catch (error) {
       sendJson(res, 500, { success: false, error: String(error) });

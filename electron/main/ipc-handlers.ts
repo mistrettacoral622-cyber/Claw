@@ -40,6 +40,12 @@ import { browserOAuthManager, type BrowserOAuthProviderType } from '../utils/bro
 import { getOutboundMediaDir, isOutboundMediaPath } from '../utils/outbound-media';
 import { appendAuditLog, checkPermission } from '../utils/permissions-enforcer';
 import { appendDispatchHints } from '../../shared/chat-dispatch-hints';
+import {
+  appendMediaReferences,
+  buildMediaReference,
+  isTextOnlyImageSchemaError,
+  isVisionMimeType,
+} from '../../shared/chat-media-attachments';
 import { applyProxySettings } from './proxy';
 import { syncLaunchAtStartupSettingFromStore } from './launch-at-startup';
 import { proxyAwareFetch } from '../utils/proxy-fetch';
@@ -1259,10 +1265,6 @@ function registerGatewayHandlers(
   // Raster images (png/jpg/gif/webp) are inlined as base64 vision attachments.
   // All other files are referenced by path in the message text so the model
   // can access them via tools (the same format channels use).
-  const VISION_MIME_TYPES = new Set([
-    'image/png', 'image/jpeg', 'image/bmp', 'image/webp',
-  ]);
-
   ipcMain.handle('chat:sendWithMedia', async (_, params: {
     sessionKey: string;
     message: string;
@@ -1288,12 +1290,11 @@ function registerGatewayHandlers(
         const fsP = await import('fs/promises');
         for (const m of params.media) {
           const exists = await fsP.access(m.filePath).then(() => true, () => false);
-          logger.info(`[chat:sendWithMedia] Processing file: ${m.fileName} (${m.mimeType}), path: ${m.filePath}, exists: ${exists}, isVision: ${VISION_MIME_TYPES.has(m.mimeType)}`);
+          logger.info(`[chat:sendWithMedia] Processing file: ${m.fileName} (${m.mimeType}), path: ${m.filePath}, exists: ${exists}, isVision: ${isVisionMimeType(m.mimeType)}`);
 
-          const mediaReference =
-            `[media attached: ${m.filePath} (${m.mimeType}) | ${m.filePath}]`;
+          const mediaReference = buildMediaReference(m);
 
-          if (VISION_MIME_TYPES.has(m.mimeType)) {
+          if (isVisionMimeType(m.mimeType)) {
             // Send as base64 attachment in the format the Gateway expects:
             // { content: base64String, mimeType: string, fileName?: string }
             // The Gateway normalizer looks for `a.content` (NOT `a.source.data`).
@@ -1338,7 +1339,25 @@ function registerGatewayHandlers(
 
       // Longer timeout for chat sends to tolerate high-latency networks (avoids connect error)
       const timeoutMs = 120000;
-      const result = await gatewayManager.rpc('chat.send', rpcParams, timeoutMs);
+      let result: unknown;
+      try {
+        result = await gatewayManager.rpc('chat.send', rpcParams, timeoutMs);
+      } catch (error) {
+        if (imageAttachments.length === 0 || !isTextOnlyImageSchemaError(error)) {
+          throw error;
+        }
+
+        const fallbackVisionMedia = params.media?.filter((item) => isVisionMimeType(item.mimeType)) ?? [];
+        const fallbackMessage = appendMediaReferences(message, fallbackVisionMedia);
+        const fallbackRpcParams: Record<string, unknown> = {
+          ...rpcParams,
+          message: fallbackMessage,
+          idempotencyKey: `${params.idempotencyKey}:text-only-media-fallback`,
+        };
+        delete fallbackRpcParams.attachments;
+        logger.warn(`[chat:sendWithMedia] Inline image send failed; retrying with staged file references only: ${String(error)}`);
+        result = await gatewayManager.rpc('chat.send', fallbackRpcParams, timeoutMs);
+      }
       logger.info(`[chat:sendWithMedia] RPC result: ${JSON.stringify(result)}`);
       return { success: true, result };
     } catch (error) {

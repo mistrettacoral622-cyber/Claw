@@ -356,6 +356,53 @@ describe('app:request security', () => {
     );
   });
 
+  it('retries staged image sends as text-only file references when the Gateway rejects image_url content', async () => {
+    const handler = handlers.get('chat:sendWithMedia');
+    expect(handler).toBeDefined();
+
+    const filePath = join(homedir(), '.openclaw', 'media', 'outbound', 'current-upload.png');
+    gatewayManager.rpc
+      .mockRejectedValueOnce(new Error('400 Failed to deserialize the JSON body into the target type: messages[75]: unknown variant image_url, expected text'))
+      .mockResolvedValueOnce({ runId: 'run-fallback' });
+
+    const response = await handler?.({}, {
+      sessionKey: 'session-1',
+      message: 'Process the attached file(s).',
+      idempotencyKey: 'idem-image',
+      media: [
+        {
+          filePath,
+          mimeType: 'image/png',
+          fileName: 'current-upload.png',
+        },
+      ],
+    });
+
+    expect(response).toEqual({
+      success: true,
+      result: { runId: 'run-fallback' },
+    });
+    expect(gatewayManager.rpc).toHaveBeenCalledTimes(2);
+    expect(gatewayManager.rpc).toHaveBeenNthCalledWith(
+      1,
+      'chat.send',
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({
+            mimeType: 'image/png',
+            fileName: 'current-upload.png',
+          }),
+        ],
+        message: expect.not.stringContaining(filePath),
+      }),
+      120000,
+    );
+    const [, fallbackParams] = gatewayManager.rpc.mock.calls[1] as [string, { attachments?: unknown; idempotencyKey?: string; message?: string }];
+    expect(fallbackParams.attachments).toBeUndefined();
+    expect(fallbackParams.idempotencyKey).toBe('idem-image:text-only-media-fallback');
+    expect(fallbackParams.message).toContain(`[media attached: ${filePath} (image/png) | ${filePath}]`);
+  });
+
   it('allows thumbnail reads for local image paths through the file read permission gate', async () => {
     const handler = handlers.get('media:getThumbnails');
     expect(handler).toBeDefined();

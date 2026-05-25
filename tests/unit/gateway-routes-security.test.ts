@@ -200,6 +200,51 @@ describe('gateway routes security', () => {
     expect(rpcParams.message).toContain('Describe this image');
   });
 
+  it('retries image sends as text-only file references when the Gateway rejects image_url content', async () => {
+    const { handleGatewayRoutes } = await import('@electron/api/routes/gateway');
+    const rpcMock = vi.fn()
+      .mockRejectedValueOnce(new Error('400 Failed to deserialize the JSON body into the target type: messages[75]: unknown variant image_url, expected text'))
+      .mockResolvedValueOnce({ runId: 'run-fallback' });
+    const imagePath = join(homedir(), '.openclaw', 'media', 'outbound', 'vision.png');
+    parseJsonBodyMock.mockResolvedValue({
+      sessionKey: 'session-1',
+      message: 'Describe this image',
+      idempotencyKey: 'idem-image',
+      media: [
+        {
+          filePath: imagePath,
+          mimeType: 'image/png',
+          fileName: 'vision.png',
+        },
+      ],
+    });
+
+    const handled = await handleGatewayRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/chat/send-with-media'),
+      {
+        gatewayManager: {
+          rpc: rpcMock,
+        },
+      } as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(rpcMock).toHaveBeenCalledTimes(2);
+    const [, firstParams] = rpcMock.mock.calls[0] as [string, { message: string; attachments?: unknown[] }];
+    const [, secondParams] = rpcMock.mock.calls[1] as [string, { message: string; attachments?: unknown[]; idempotencyKey?: string }];
+    expect(firstParams.attachments?.length).toBe(1);
+    expect(firstParams.message).not.toContain(imagePath);
+    expect(secondParams.attachments).toBeUndefined();
+    expect(secondParams.idempotencyKey).toBe('idem-image:text-only-media-fallback');
+    expect(secondParams.message).toContain(`[media attached: ${imagePath} (image/png) | ${imagePath}]`);
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      result: { runId: 'run-fallback' },
+    });
+  });
+
   it('allows generated media paths for follow-up sends', async () => {
     const { handleGatewayRoutes } = await import('@electron/api/routes/gateway');
     const rpcMock = vi.fn(async () => ({ runId: 'run-generated' }));
