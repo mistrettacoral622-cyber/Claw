@@ -600,12 +600,11 @@ describe('intercom service', () => {
     expect(retryArgs.at(-1)).toContain('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand');
   });
 
-  it('resets and retries intercom messages when stale session history contains image_url content', async () => {
+  it('retries intercom messages with a clean session when stale history contains image_url content', async () => {
     spawnMock
       .mockReturnValueOnce(createProcessMock({
         stdout: '400 Failed to deserialize the JSON body into the target type: messages[75]: unknown variant image_url, expected text at line 1 column 197067',
       }))
-      .mockReturnValueOnce(createProcessMock({ stdout: '{"reset":true}\n' }))
       .mockReturnValueOnce(createProcessMock({ stdout: '{"ok":true,"message":"你好"}\n' }));
     configStore.current = {
       intercom: {
@@ -631,10 +630,10 @@ describe('intercom service', () => {
       success: true,
       stdout: '{"ok":true,"message":"你好"}',
     }));
-    expect(spawnMock).toHaveBeenCalledTimes(3);
-    const resetArgs = spawnMock.mock.calls[1][1] as string[];
-    const retryArgs = spawnMock.mock.calls[2][1] as string[];
-    expect(resetArgs.at(-1)).toContain("'--message' '/new'");
+    expect(result.sessionId).toMatch(/^intercom-text-[a-f0-9]{8}$/);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const retryArgs = spawnMock.mock.calls[1][1] as string[];
+    expect(retryArgs.at(-1)).toContain("'--session-id' 'intercom-text-");
     expect(retryArgs.at(-1)).toContain("[from agent dev] 你好");
   });
 

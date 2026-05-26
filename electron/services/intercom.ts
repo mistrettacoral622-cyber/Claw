@@ -1468,6 +1468,11 @@ function isIntercomResetCommand(message: string): boolean {
   return normalized === '/new' || normalized === '/reset';
 }
 
+function buildCleanIntercomSessionId(sessionId: string): string {
+  const base = safeRemotePathPart(normalizeString(sessionId) || DEFAULT_SESSION_ID, DEFAULT_SESSION_ID);
+  return `${base}-text-${randomUUID().slice(0, 8)}`;
+}
+
 async function resolveIntercomTarget(target: string): Promise<{
   snapshot: IntercomSnapshot;
   target: string;
@@ -1491,15 +1496,21 @@ async function runIntercomRouteMessage(params: {
   sessionId: string;
 }): Promise<{
   route: IntercomRoute;
+  sessionId: string;
   invocation: { command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv };
   commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
 }> {
   const sshPassword = params.route.transport === 'ssh' ? await getIntercomSshPassword(params.route.id) : null;
-  const runMessageOnce = async (message: string, route: IntercomRoute, options: { windowsAuto?: boolean } = {}) => {
+  const runMessageOnce = async (
+    message: string,
+    route: IntercomRoute,
+    options: { windowsAuto?: boolean } = {},
+    sessionId = params.sessionId,
+  ) => {
     const runForMessage = async (targetRoute: IntercomRoute) => {
       const remoteCommand = options.windowsAuto
-        ? buildWindowsAutoOpenClawCommand(targetRoute, message, params.sessionId)
-        : buildRemoteCommand(targetRoute, message, params.sessionId);
+        ? buildWindowsAutoOpenClawCommand(targetRoute, message, sessionId)
+        : buildRemoteCommand(targetRoute, message, sessionId);
       const invocation = targetRoute.transport === 'ssh' && sshPassword
         ? {
             command: 'ssh2',
@@ -1509,15 +1520,15 @@ async function runIntercomRouteMessage(params: {
             ],
           }
         : targetRoute.transport === 'ssh'
-          ? buildSshCommand(targetRoute, message, params.sessionId, options)
-          : buildLocalCommand(targetRoute, message, params.sessionId);
+          ? buildSshCommand(targetRoute, message, sessionId, options)
+          : buildLocalCommand(targetRoute, message, sessionId);
       const commandResult = targetRoute.transport === 'ssh' && sshPassword
-        ? await runSsh2Command(targetRoute, sshPassword, message, params.sessionId, options)
+        ? await runSsh2Command(targetRoute, sshPassword, message, sessionId, options)
         : await runIntercomCommand(invocation.command, invocation.args, {
             cwd: 'cwd' in invocation ? invocation.cwd : undefined,
             env: 'env' in invocation ? invocation.env : process.env,
           });
-      return { route: targetRoute, invocation, commandResult };
+      return { route: targetRoute, sessionId, invocation, commandResult };
     };
 
     try {
@@ -1529,7 +1540,7 @@ async function runIntercomRouteMessage(params: {
           host: params.route.host,
           agent: params.route.agent,
         });
-        return runMessageOnce(message, route, { windowsAuto: true });
+        return runMessageOnce(message, route, { windowsAuto: true }, sessionId);
       }
       if (!getIntercomErrorText(error).includes('KTClaw executable not found at /usr/ktclaw')) {
         throw error;
@@ -1539,7 +1550,7 @@ async function runIntercomRouteMessage(params: {
         host: params.route.host,
         agent: params.route.agent,
       });
-      return runMessageOnce(message, withBundledLinuxOpenClawCommand(route));
+      return runMessageOnce(message, withBundledLinuxOpenClawCommand(route), options, sessionId);
     }
   };
 
@@ -1549,25 +1560,27 @@ async function runIntercomRouteMessage(params: {
       return firstResult;
     }
 
-    logger.warn('Intercom session history contains image_url content for a text-only model; resetting remote session and retrying message', {
+    const cleanSessionId = buildCleanIntercomSessionId(params.sessionId);
+    logger.warn('Intercom session history contains image_url content for a text-only model; retrying with a clean session', {
       target: params.route.id,
       host: params.route.host,
       agent: params.route.agent,
+      sessionId: cleanSessionId,
     });
-    const resetResult = await runMessageOnce('/new', firstResult.route);
-    return runMessageOnce(params.message, resetResult.route);
+    return runMessageOnce(params.message, firstResult.route, {}, cleanSessionId);
   } catch (error) {
     if (isIntercomResetCommand(params.message) || !isIntercomTextOnlyImageSchemaFailure(error)) {
       throw error;
     }
 
-    logger.warn('Intercom command failed because session history contains image_url content; resetting remote session and retrying message', {
+    const cleanSessionId = buildCleanIntercomSessionId(params.sessionId);
+    logger.warn('Intercom command failed because session history contains image_url content; retrying with a clean session', {
       target: params.route.id,
       host: params.route.host,
       agent: params.route.agent,
+      sessionId: cleanSessionId,
     });
-    await runMessageOnce('/new', params.route);
-    return runMessageOnce(params.message, params.route);
+    return runMessageOnce(params.message, params.route, {}, cleanSessionId);
   }
 }
 
@@ -2190,7 +2203,7 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
 
   const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
   const finalMessage = buildCallerMessage(sender, message);
-  const { invocation, commandResult } = await runIntercomRouteMessage({
+  const { invocation, commandResult, sessionId: actualSessionId } = await runIntercomRouteMessage({
     route,
     message: finalMessage,
     sessionId,
@@ -2204,7 +2217,7 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
     transport: route.transport,
     host: route.host,
     agent: route.agent,
-    sessionId,
+    sessionId: actualSessionId,
     command: invocation.command,
     args: invocation.args,
     exitCode: commandResult.exitCode,
@@ -2225,7 +2238,7 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
   const task = buildIntercomRemoteTaskRequest(input);
   const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
   const finalMessage = buildIntercomRemoteTaskMessage(sender, task);
-  const { invocation, commandResult } = await runIntercomRouteMessage({
+  const { invocation, commandResult, sessionId: actualSessionId } = await runIntercomRouteMessage({
     route,
     message: finalMessage,
     sessionId,
@@ -2242,7 +2255,7 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
     transport: route.transport,
     host: route.host,
     agent: route.agent,
-    sessionId,
+    sessionId: actualSessionId,
     command: invocation.command,
     args: invocation.args,
     exitCode: commandResult.exitCode,
