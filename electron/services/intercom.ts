@@ -338,10 +338,6 @@ function remoteInboxDir(sender: string, taskId: string): string {
   return `${INTERCOM_REMOTE_BASE_DIR}/inbox/${safeRemotePathPart(sender, 'sender')}/${safeRemotePathPart(taskId, 'task')}`;
 }
 
-function remoteOutboxDir(taskId: string): string {
-  return `${INTERCOM_REMOTE_BASE_DIR}/outbox/${safeRemotePathPart(taskId, 'task')}`;
-}
-
 function normalizeRemotePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+/g, '/');
 }
@@ -912,13 +908,21 @@ export function buildIntercomRemoteTaskRequest(input: IntercomRemoteTaskSendInpu
 }
 
 export function buildIntercomRemoteTaskMessage(sender: string, task: IntercomRemoteTaskRequest): string {
+  const screenshotReturnHint = task.action === 'screenshot'
+    ? [
+        '',
+        'For screenshot tasks, capture the remote screen, save a PNG file under payload.outbox, and include it in artifacts as:',
+        '{"type":"image","path":"<payload.outbox>/screenshot.png","name":"screenshot.png","mimeType":"image/png"}',
+      ].join('\n')
+    : '';
   return buildCallerMessage(
     normalizeString(sender) || 'ktclaw',
     [
       'remote_task:',
       JSON.stringify(task, null, 2),
       '',
-      'Return a JSON object with success, summary, artifacts, logs, and error. Save any files under the task outbox path when one is provided.',
+      'Return only one JSON object with success, summary, artifacts, logs, and error. Save any files under the task outbox path when one is provided.',
+      screenshotReturnHint,
     ].join('\n'),
   );
 }
@@ -1051,6 +1055,10 @@ function collectAssistantTexts(value: unknown, texts: string[], seen = new Set<u
 }
 
 function findTaskResultCandidate(value: unknown, seen = new Set<unknown>(), depth = 0): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    const parsed = parseIntercomJson(value);
+    return parsed === null ? null : findTaskResultCandidate(parsed, seen, depth + 1);
+  }
   if (depth > 8 || value === null || typeof value !== 'object' || seen.has(value)) {
     return null;
   }
@@ -1070,13 +1078,110 @@ function findTaskResultCandidate(value: unknown, seen = new Set<unknown>(), dept
   if ([...REMOTE_TASK_RESULT_KEYS].some((key) => key in value)) {
     return value;
   }
-  for (const key of ['result', 'data', 'message', 'output', 'response', 'content']) {
+  for (const key of ['result', 'data', 'message', 'output', 'response', 'content', 'payload', 'payloads', 'messages']) {
     const found = findTaskResultCandidate(value[key], seen, depth + 1);
     if (found) {
       return found;
     }
   }
   return null;
+}
+
+function isOutboxArtifactPath(value: string): boolean {
+  const normalized = value.replaceAll('\\', '/').toLowerCase();
+  return normalized.includes('/.ktclaw/intercom/outbox/')
+    || normalized.includes('/intercom/outbox/');
+}
+
+function hasArtifactMetadata(value: Record<string, unknown>): boolean {
+  return typeof value.name === 'string'
+    || typeof value.fileName === 'string'
+    || typeof value.mimeType === 'string'
+    || typeof value.mime === 'string'
+    || typeof value.size === 'number'
+    || value.type === 'image'
+    || value.type === 'directory'
+    || value.type === 'archive'
+    || value.type === 'text'
+    || value.type === 'file';
+}
+
+function pushArtifact(artifacts: IntercomRemoteTaskArtifact[], value: unknown): void {
+  const artifact = normalizeArtifact(value);
+  if (!artifact) {
+    return;
+  }
+  if (artifacts.some((entry) => entry.path === artifact.path)) {
+    return;
+  }
+  artifacts.push(artifact);
+}
+
+function collectArtifactPathsFromText(value: string, artifacts: IntercomRemoteTaskArtifact[]): void {
+  const pattern = /(?:~|\/|[A-Za-z]:[\\/])(?:[^\s"'`{}[\],]+[\\/])+[^\s"'`{}[\],]+\.(?:png|jpe?g|webp|gif|bmp|svg|pdf|zip|tar|gz|tgz|txt|md|json|csv|html)/gi;
+  for (const match of value.matchAll(pattern)) {
+    const path = match[0];
+    if (isOutboxArtifactPath(path)) {
+      pushArtifact(artifacts, path);
+    }
+  }
+}
+
+function collectArtifactCandidates(
+  value: unknown,
+  artifacts: IntercomRemoteTaskArtifact[] = [],
+  seen = new Set<unknown>(),
+  depth = 0,
+  artifactContext = false,
+): IntercomRemoteTaskArtifact[] {
+  if (depth > 10 || value === null || value === undefined) {
+    return artifacts;
+  }
+
+  if (typeof value === 'string') {
+    if (artifactContext) {
+      pushArtifact(artifacts, value);
+    }
+    collectArtifactPathsFromText(value, artifacts);
+    const parsed = parseIntercomJson(value);
+    if (parsed !== null) {
+      collectArtifactCandidates(parsed, artifacts, seen, depth + 1, artifactContext);
+    }
+    return artifacts;
+  }
+
+  if (typeof value !== 'object' || seen.has(value)) {
+    return artifacts;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectArtifactCandidates(entry, artifacts, seen, depth + 1, artifactContext);
+    }
+    return artifacts;
+  }
+
+  if (!isRecord(value)) {
+    return artifacts;
+  }
+
+  if (Array.isArray(value.artifacts)) {
+    for (const entry of value.artifacts) {
+      collectArtifactCandidates(entry, artifacts, seen, depth + 1, true);
+    }
+  }
+
+  const path = normalizeString(value.path ?? value.remotePath ?? value.filePath);
+  if (path && (artifactContext || isOutboxArtifactPath(path) || hasArtifactMetadata(value))) {
+    pushArtifact(artifacts, value);
+  }
+
+  for (const entry of Object.values(value)) {
+    collectArtifactCandidates(entry, artifacts, seen, depth + 1, false);
+  }
+
+  return artifacts;
 }
 
 function normalizeArtifact(value: unknown): IntercomRemoteTaskArtifact | null {
@@ -1120,9 +1225,7 @@ function normalizeTaskResultFromObject(value: Record<string, unknown>, stdout: s
     || assistantTexts.at(-1)
     || '';
   const logs = readText(value.logs ?? value.log ?? value.stderr ?? value.stdout) || stdout;
-  const artifacts = Array.isArray(value.artifacts)
-    ? value.artifacts.map(normalizeArtifact).filter((entry): entry is IntercomRemoteTaskArtifact => entry !== null)
-    : [];
+  const artifacts = collectArtifactCandidates(value);
   const rawError = value.error ?? value.message;
   const error = value.success === false ? (readText(rawError) || 'Remote task failed') : (readText(value.error) || null);
   return {
@@ -1158,7 +1261,7 @@ export function normalizeIntercomRemoteTaskResult(stdout: string): IntercomRemot
     return {
       success: true,
       summary: text,
-      artifacts: [],
+      artifacts: collectArtifactCandidates(parsed),
       logs: normalized,
       error: null,
     };
@@ -1729,6 +1832,95 @@ function sftpFastGet(sftp: SFTPWrapper, remotePath: string, localPath: string): 
   });
 }
 
+function buildSftpHostArg(route: IntercomRoute): string {
+  const resolved = resolveSshHostAndUsername(route);
+  const username = resolved.username || userInfo().username;
+  return `${username}@${resolved.host}`;
+}
+
+function quoteSftpBatchPath(value: string): string {
+  return `"${value.replace(/\\/g, '/').replaceAll('"', '\\"')}"`;
+}
+
+function buildSftpDirCreationBatch(remoteDir: string): string[] {
+  const normalized = normalizeRemotePath(remoteDir).replace(/\/+$/, '');
+  const withoutHome = toSftpPath(normalized);
+  const parts = withoutHome.split('/').filter(Boolean);
+  const lines: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    lines.push(`-mkdir ${quoteSftpBatchPath(current)}`);
+  }
+  return lines;
+}
+
+function runSftpBatch(route: IntercomRoute, batch: string): Promise<{ stdout: string; stderr: string; durationMs: number }> {
+  const startedAt = Date.now();
+  const args = [
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-o',
+    `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}`,
+    '-b',
+    '-',
+    ...(route.sshPort ? ['-P', String(route.sshPort)] : []),
+    buildSftpHostArg(route),
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('sftp', args, {
+      env: process.env,
+      detached: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let completed = false;
+    let stdout = '';
+    let stderr = '';
+    const finish = (callback: () => void) => {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const buildResult = () => ({
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      durationMs: Date.now() - startedAt,
+    });
+    const timeout = setTimeout(() => {
+      const result = buildResult();
+      const message = `Intercom SFTP command timed out after ${SSH_CONNECT_TIMEOUT_SECONDS}s`;
+      finish(() => reject(new Error(`${message}. ${result.stderr || result.stdout}`.trim())));
+    }, SSH_CONNECT_TIMEOUT_SECONDS * 1000);
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      finish(() => reject(new Error(`Intercom SFTP command failed to start: ${error.message}`)));
+    });
+    child.on('close', (code) => {
+      const result = buildResult();
+      if (code && code !== 0) {
+        const details = result.stderr || result.stdout || `exit code ${code}`;
+        finish(() => reject(new Error(`Intercom SFTP command failed: ${details}`)));
+        return;
+      }
+      finish(() => resolve(result));
+    });
+    child.stdin?.end(`${batch.replace(/\s+$/, '')}\n`);
+  });
+}
+
 function runIntercomCommand(command: string, args: string[], options: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -2077,9 +2269,54 @@ export async function uploadIntercomFiles(input: IntercomUploadFilesInput): Prom
   if (route.transport === 'nats') {
     throw new Error('NATS intercom transport is not implemented yet');
   }
+  if (route.transport !== 'ssh') {
+    throw new Error('SFTP transfers require an SSH intercom route');
+  }
+
+  const remoteDir = remoteInboxDir(sender, taskId);
+  const password = await getIntercomSshPassword(route.id);
+  if (!password) {
+    const records: IntercomTransferRecord[] = [];
+    const batch = buildSftpDirCreationBatch(remoteDir);
+    for (const file of files) {
+      const localPath = normalizeString(file.localPath);
+      if (!localPath) {
+        throw new Error('localPath is required for every upload file');
+      }
+      const startedAt = Date.now();
+      const fileName = safeRemotePathPart(normalizeString(file.fileName) || basename(localPath), 'file');
+      const remotePath = pathPosix.join(remoteDir, fileName);
+      const localStat = await stat(localPath);
+      batch.push(`put ${quoteSftpBatchPath(localPath)} ${quoteSftpBatchPath(toSftpPath(remotePath))}`);
+      records.push({
+        id: randomUUID(),
+        routeId: route.id,
+        taskId,
+        direction: 'upload',
+        status: 'success',
+        fileName,
+        localPath,
+        remotePath,
+        mimeType: normalizeString(file.mimeType) || getMimeType(fileName),
+        size: typeof file.size === 'number' && Number.isFinite(file.size) ? file.size : localStat.size,
+        durationMs: Date.now() - startedAt,
+        error: null,
+      });
+    }
+    const startedAt = Date.now();
+    await runSftpBatch(route, batch.join('\n'));
+    return {
+      success: true,
+      taskId,
+      target,
+      transfers: records.map((record) => ({
+        ...record,
+        durationMs: Math.max(record.durationMs, Date.now() - startedAt),
+      })),
+    };
+  }
 
   const transfers = await withIntercomSftp(route, async (sftp) => {
-    const remoteDir = remoteInboxDir(sender, taskId);
     await ensureSftpDir(sftp, remoteDir);
     const records: IntercomTransferRecord[] = [];
     for (const file of files) {
@@ -2134,9 +2371,59 @@ export async function downloadIntercomArtifacts(input: IntercomDownloadArtifacts
   if (route.transport === 'nats') {
     throw new Error('NATS intercom transport is not implemented yet');
   }
+  if (route.transport !== 'ssh') {
+    throw new Error('SFTP transfers require an SSH intercom route');
+  }
 
   const localDir = join(INTERCOM_ARTIFACT_CACHE_DIR, safeRemotePathPart(route.id, 'route'), safeRemotePathPart(taskId, 'task'));
   await mkdir(localDir, { recursive: true });
+  const password = await getIntercomSshPassword(route.id);
+  if (!password) {
+    const records: IntercomTransferRecord[] = [];
+    const batch: string[] = [];
+    for (const artifact of artifacts) {
+      const remotePath = normalizeRemotePath(normalizeString(artifact.path));
+      if (!remotePath) {
+        throw new Error('artifact path is required for every download');
+      }
+      const startedAt = Date.now();
+      const fileName = safeRemotePathPart(normalizeString(artifact.name) || basename(remotePath), `artifact-${records.length + 1}`);
+      const localPath = join(localDir, fileName);
+      await mkdir(dirname(localPath), { recursive: true });
+      batch.push(`get ${quoteSftpBatchPath(toSftpPath(remotePath))} ${quoteSftpBatchPath(localPath)}`);
+      records.push({
+        id: randomUUID(),
+        routeId: route.id,
+        taskId,
+        direction: 'download',
+        status: 'success',
+        fileName,
+        localPath,
+        remotePath,
+        mimeType: normalizeString(artifact.mimeType) || getMimeType(fileName),
+        size: typeof artifact.size === 'number' && Number.isFinite(artifact.size) ? artifact.size : 0,
+        durationMs: Date.now() - startedAt,
+        error: null,
+      });
+    }
+    const startedAt = Date.now();
+    await runSftpBatch(route, batch.join('\n'));
+    const transfers = await Promise.all(records.map(async (record) => {
+      const localStat = await stat(record.localPath || '');
+      return {
+        ...record,
+        size: record.size || localStat.size,
+        durationMs: Math.max(record.durationMs, Date.now() - startedAt),
+      };
+    }));
+    return {
+      success: true,
+      taskId,
+      target,
+      transfers,
+    };
+  }
+
   const transfers = await withIntercomSftp(route, async (sftp) => {
     const records: IntercomTransferRecord[] = [];
     for (const artifact of artifacts) {

@@ -60,6 +60,9 @@ function createProcessMock(options: {
   }
 
   return {
+    stdin: {
+      end: vi.fn(),
+    },
     stdout: { on: onFor(stdoutListeners) },
     stderr: { on: onFor(stderrListeners) },
     on: onFor(listeners),
@@ -758,6 +761,78 @@ describe('intercom service', () => {
     });
   });
 
+  it('collects screenshot artifacts from OpenClaw wrapped payload output', async () => {
+    const { normalizeIntercomRemoteTaskResult } = await import('@electron/services/intercom');
+
+    const result = normalizeIntercomRemoteTaskResult(JSON.stringify({
+      runId: 'run-1',
+      status: 'ok',
+      summary: 'completed',
+      result: {
+        payloads: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  success: true,
+                  summary: 'Screenshot saved',
+                  artifacts: [
+                    {
+                      type: 'image',
+                      path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+                      name: 'screenshot.png',
+                      mimeType: 'image/png',
+                    },
+                  ],
+                  logs: 'captured screen',
+                  error: null,
+                }),
+              },
+            ],
+          },
+        ],
+      },
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      summary: 'completed',
+      artifacts: [
+        expect.objectContaining({
+          type: 'image',
+          path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+          mimeType: 'image/png',
+        }),
+      ],
+    }));
+  });
+
+  it('collects outbox artifact paths mentioned in assistant text', async () => {
+    const { normalizeIntercomRemoteTaskResult } = await import('@electron/services/intercom');
+
+    const result = normalizeIntercomRemoteTaskResult(JSON.stringify({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              text: 'completed: ~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+            },
+          ],
+        },
+      ],
+    }));
+
+    expect(result.artifacts).toEqual([
+      expect.objectContaining({
+        type: 'image',
+        path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+      }),
+    ]);
+  });
+
   it('uploads files to the remote intercom inbox over SFTP', async () => {
     secretStore.set('intercom:ssh:ops', {
       type: 'local',
@@ -797,6 +872,43 @@ describe('intercom service', () => {
       '.ktclaw/intercom/inbox/dev/task-1/input.txt',
       expect.any(Function),
     );
+  });
+
+  it('uploads files with system sftp when no SSH password is saved', async () => {
+    const child = createProcessMock();
+    spawnMock.mockReturnValueOnce(child);
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { uploadIntercomFiles } = await import('@electron/services/intercom');
+
+    const result = await uploadIntercomFiles({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      files: [{ localPath: '/tmp/input.txt', fileName: 'input.txt', mimeType: 'text/plain' }],
+    });
+
+    expect(result.transfers[0]).toEqual(expect.objectContaining({
+      direction: 'upload',
+      status: 'success',
+      remotePath: '~/.ktclaw/intercom/inbox/dev/task-1/input.txt',
+    }));
+    expect(spawnMock).toHaveBeenCalledWith(
+      'sftp',
+      expect.arrayContaining(['ubuntu@srv-c']),
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
+    );
+    expect(child.stdin.end).toHaveBeenCalledWith(expect.stringContaining('put "/tmp/input.txt" ".ktclaw/intercom/inbox/dev/task-1/input.txt"'));
   });
 
   it('downloads artifacts from the remote outbox into the local artifact cache', async () => {
@@ -839,7 +951,48 @@ describe('intercom service', () => {
     );
   });
 
-  it('returns a clear error when SFTP has no saved SSH password', async () => {
+  it('downloads artifacts with system sftp when no SSH password is saved', async () => {
+    const child = createProcessMock();
+    spawnMock.mockReturnValueOnce(child);
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { downloadIntercomArtifacts } = await import('@electron/services/intercom');
+
+    const result = await downloadIntercomArtifacts({
+      target: 'ops',
+      taskId: 'task-1',
+      artifacts: [{ path: '~/.ktclaw/intercom/outbox/task-1/result.png', type: 'image' }],
+    });
+
+    expect(result.transfers[0]).toEqual(expect.objectContaining({
+      direction: 'download',
+      status: 'success',
+      fileName: 'result.png',
+      remotePath: '~/.ktclaw/intercom/outbox/task-1/result.png',
+    }));
+    expect(spawnMock).toHaveBeenCalledWith(
+      'sftp',
+      expect.arrayContaining(['ubuntu@srv-c']),
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
+    );
+    expect(child.stdin.end).toHaveBeenCalledWith(expect.stringContaining('get ".ktclaw/intercom/outbox/task-1/result.png"'));
+  });
+
+  it('surfaces system sftp errors when passwordless transfer cannot connect', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stderr: 'Permission denied (publickey).',
+      exitCode: 1,
+    }));
     configStore.current = {
       intercom: {
         agents: {
@@ -859,7 +1012,7 @@ describe('intercom service', () => {
       sender: 'dev',
       taskId: 'task-1',
       files: [{ localPath: '/tmp/input.txt' }],
-    })).rejects.toThrow('SFTP requires a saved SSH password for this route');
+    })).rejects.toThrow('Intercom SFTP command failed: Permission denied');
   });
 
   it('times out intercom commands that never exit', async () => {
