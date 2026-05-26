@@ -500,6 +500,33 @@ describe('intercom service', () => {
     expect(retryArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
   });
 
+  it('runs discovered POSIX openclaw scripts through sh when execute permission is missing', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('if [ -x "$p" ]; then exec "$p" "$@"; fi');
+    expect(sshArgs.at(-1)).toContain('if [ -f "$p" ]; then exec sh "$p" "$@"; fi');
+  });
+
   it('retries default SSH intercom routes with Windows auto-discovery when sh is unavailable', async () => {
     spawnMock
       .mockReturnValueOnce(createProcessMock({

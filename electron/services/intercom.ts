@@ -1248,9 +1248,9 @@ function buildPosixAutoOpenClawCommandPrefix(): string {
   const script = [
     'set -eu',
     'if command -v openclaw >/dev/null 2>&1; then exec openclaw "$@"; fi',
-    `for p in ${candidates.map((candidate) => `"${candidate.replace(/"/g, '\\"')}"`).join(' ')}; do if [ -f "$p" ]; then exec "$p" "$@"; fi; done`,
-    'if [ -f /opt/KTClaw/ktclaw ] && [ -f /opt/KTClaw/resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs "$@"; fi',
-    'if [ -f /Applications/KTClaw.app/Contents/MacOS/KTClaw ] && [ -f /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /Applications/KTClaw.app/Contents/MacOS/KTClaw /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs "$@"; fi',
+    `for p in ${candidates.map((candidate) => `"${candidate.replace(/"/g, '\\"')}"`).join(' ')}; do if [ -x "$p" ]; then exec "$p" "$@"; fi; if [ -f "$p" ]; then exec sh "$p" "$@"; fi; done`,
+    'if [ -x /opt/KTClaw/ktclaw ] && [ -f /opt/KTClaw/resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs "$@"; fi',
+    'if [ -x /Applications/KTClaw.app/Contents/MacOS/KTClaw ] && [ -f /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /Applications/KTClaw.app/Contents/MacOS/KTClaw /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs "$@"; fi',
     'echo "KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path." >&2',
     'exit 127',
   ].join('; ');
