@@ -425,7 +425,7 @@ describe('intercom service', () => {
         '-p',
         '2222',
         'ubuntu@srv-c',
-        expect.stringContaining("'openclaw' 'agent' '--agent' 'ops' '--session-id' 'intercom' '--message'"),
+        expect.stringContaining("'sh' '-lc'"),
       ],
       expect.objectContaining({
         detached: false,
@@ -498,6 +498,43 @@ describe('intercom service', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
     expect(retryArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
+  });
+
+  it('retries default SSH intercom routes with Windows auto-discovery when sh is unavailable', async () => {
+    spawnMock
+      .mockReturnValueOnce(createProcessMock({
+        stderr: "'sh' is not recognized as an internal or external command",
+        exitCode: 127,
+      }))
+      .mockReturnValueOnce(createProcessMock({ stdout: '{"ok":true}\n' }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'win-pc',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'sunyb9',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      stdout: '{"ok":true}',
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const retryArgs = spawnMock.mock.calls[1][1] as string[];
+    expect(retryArgs.at(-1)).toContain('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand');
   });
 
   it('resets and retries intercom messages when stale session history contains image_url content', async () => {
@@ -578,7 +615,11 @@ describe('intercom service', () => {
       password: 'linux-password',
     }));
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("'openclaw' 'agent' '--agent' 'ops'"),
+      expect.stringContaining("'sh' '-lc'"),
+      expect.any(Function),
+    );
+    expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
+      expect.stringContaining("'agent' '--agent' 'ops'"),
       expect.any(Function),
     );
   });

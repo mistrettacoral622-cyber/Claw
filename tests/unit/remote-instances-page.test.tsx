@@ -229,7 +229,7 @@ describe('RemoteInstances page', () => {
           sshPort: 22,
           sshPassword: 'secret',
           clearSshPassword: false,
-          remoteCommand: 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs',
+          remoteCommand: 'openclaw',
         }),
       }),
     );

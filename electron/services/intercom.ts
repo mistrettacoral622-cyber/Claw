@@ -229,6 +229,7 @@ const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
 const KTCLAW_LINUX_REMOTE_OPENCLAW_COMMAND = 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs';
+const KTCLAW_AUTO_REMOTE_LABEL = 'ktclaw-intercom';
 const DEFAULT_SSH_PORT = 22;
 const DEFAULT_REMOTE_TASK_RETURN: IntercomRemoteTaskReturnChannel[] = ['summary', 'artifacts', 'logs'];
 const REMOTE_TASK_RESULT_KEYS = new Set(['success', 'summary', 'artifacts', 'logs', 'error']);
@@ -1221,25 +1222,112 @@ function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: st
     message,
     '--json',
   ];
-  const commandParts = splitPosixCommand(route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND);
+  const commandParts = splitPosixCommand(resolveRemoteCommandPrefix(route));
   const remoteCommandPrefix = commandParts.length > 0
     ? commandParts.map(quoteRemoteCommandPart).join(' ')
     : quotePosix(DEFAULT_REMOTE_OPENCLAW_COMMAND);
   return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
 }
 
-function shouldRetryWithBundledLinuxOpenClaw(route: IntercomRoute, error: unknown): boolean {
+function shouldUseAutoRemoteCommand(route: IntercomRoute): boolean {
+  return (route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND) === DEFAULT_REMOTE_OPENCLAW_COMMAND;
+}
+
+function buildPosixAutoOpenClawCommandPrefix(): string {
+  const candidates = [
+    '$HOME/.local/bin/openclaw',
+    '$HOME/Desktop/claw/KTClaw/node_modules/.bin/openclaw',
+    '$HOME/Desktop/KTClaw/node_modules/.bin/openclaw',
+    '$HOME/Desktop/ClawX-main/node_modules/.bin/openclaw',
+    '$HOME/桌面/claw/KTClaw/node_modules/.bin/openclaw',
+    '$HOME/桌面/KTClaw/node_modules/.bin/openclaw',
+    '$HOME/桌面/ClawX-main/node_modules/.bin/openclaw',
+    '$HOME/Desktop/claw/KTClaw/resources/cli/posix/openclaw',
+    '$HOME/桌面/claw/KTClaw/resources/cli/posix/openclaw',
+  ];
+  const script = [
+    'set -eu',
+    'if command -v openclaw >/dev/null 2>&1; then exec openclaw "$@"; fi',
+    `for p in ${candidates.map((candidate) => `"${candidate.replace(/"/g, '\\"')}"`).join(' ')}; do if [ -f "$p" ]; then exec "$p" "$@"; fi; done`,
+    'if [ -f /opt/KTClaw/ktclaw ] && [ -f /opt/KTClaw/resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs "$@"; fi',
+    'if [ -f /Applications/KTClaw.app/Contents/MacOS/KTClaw ] && [ -f /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs ]; then ELECTRON_RUN_AS_NODE=1 exec /Applications/KTClaw.app/Contents/MacOS/KTClaw /Applications/KTClaw.app/Contents/Resources/openclaw/openclaw.mjs "$@"; fi',
+    'echo "KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path." >&2',
+    'exit 127',
+  ].join('; ');
+  return `sh -lc ${quotePosix(script)} ${quotePosix(KTCLAW_AUTO_REMOTE_LABEL)}`;
+}
+
+function resolveRemoteCommandPrefix(route: IntercomRoute): string {
+  return shouldUseAutoRemoteCommand(route)
+    ? buildPosixAutoOpenClawCommandPrefix()
+    : (route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND);
+}
+
+function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, sessionId: string): string {
+  const remoteArgs = [
+    'agent',
+    '--agent',
+    route.agent,
+    '--session-id',
+    sessionId,
+    '--message',
+    message,
+    '--json',
+  ];
+  const argsBase64 = Buffer.from(JSON.stringify(remoteArgs), 'utf-8').toString('base64');
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$argsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${argsBase64}'))`,
+    '$openclawArgs = @($argsJson | ConvertFrom-Json)',
+    '$cmd = Get-Command openclaw -ErrorAction SilentlyContinue',
+    'if ($cmd) { & $cmd.Source @openclawArgs; exit $LASTEXITCODE }',
+    '$candidatePaths = @(',
+    '  (Join-Path (Get-Location) "node_modules\\.bin\\openclaw.cmd"),',
+    '  (Join-Path (Get-Location) "resources\\cli\\win32\\openclaw.cmd"),',
+    '  "$env:USERPROFILE\\Desktop\\claw\\KTClaw\\node_modules\\.bin\\openclaw.cmd",',
+    '  "$env:USERPROFILE\\Desktop\\KTClaw\\node_modules\\.bin\\openclaw.cmd",',
+    '  "$env:USERPROFILE\\Desktop\\ClawX-main\\node_modules\\.bin\\openclaw.cmd",',
+    '  "$env:LOCALAPPDATA\\Programs\\KTClaw\\resources\\cli\\win32\\openclaw.cmd",',
+    '  "$env:ProgramFiles\\KTClaw\\resources\\cli\\win32\\openclaw.cmd"',
+    ')',
+    'foreach ($path in $candidatePaths) { if ($path -and (Test-Path -LiteralPath $path)) { & $path @openclawArgs; exit $LASTEXITCODE } }',
+    '$electronEntries = @(',
+    '  @{ Exe = "$env:LOCALAPPDATA\\Programs\\KTClaw\\KTClaw.exe"; Mjs = "$env:LOCALAPPDATA\\Programs\\KTClaw\\resources\\openclaw\\openclaw.mjs" },',
+    '  @{ Exe = "$env:ProgramFiles\\KTClaw\\KTClaw.exe"; Mjs = "$env:ProgramFiles\\KTClaw\\resources\\openclaw\\openclaw.mjs" }',
+    ')',
+    'foreach ($entry in $electronEntries) { if ((Test-Path -LiteralPath $entry.Exe) -and (Test-Path -LiteralPath $entry.Mjs)) { $env:ELECTRON_RUN_AS_NODE = "1"; & $entry.Exe $entry.Mjs @openclawArgs; exit $LASTEXITCODE } }',
+    'Write-Error "KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path."',
+    'exit 127',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
+function getIntercomErrorText(error: unknown): string {
+  const row = error && typeof error === 'object' ? error as { stdout?: unknown; stderr?: unknown } : {};
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    message,
+    typeof row.stdout === 'string' ? row.stdout : '',
+    typeof row.stderr === 'string' ? row.stderr : '',
+  ].filter(Boolean).join('\n');
+}
+
+function shouldRetryWithAutoRemoteDiscovery(route: IntercomRoute, error: unknown): boolean {
   if (route.transport !== 'ssh') {
     return false;
   }
-  if ((route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND) !== DEFAULT_REMOTE_OPENCLAW_COMMAND) {
+  if (!shouldUseAutoRemoteCommand(route)) {
     return false;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  const stderr = typeof (error as { stderr?: unknown }).stderr === 'string'
-    ? (error as { stderr: string }).stderr
-    : '';
-  return `${message}\n${stderr}`.includes('KTClaw executable not found at /usr/ktclaw');
+  const normalized = getIntercomErrorText(error).toLowerCase();
+  return normalized.includes('ktclaw/openclaw command not found')
+    || normalized.includes('sh: command not found')
+    || normalized.includes('sh: not found')
+    || normalized.includes('sh : the term')
+    || normalized.includes("'sh' is not recognized")
+    || normalized.includes('openclaw: command not found')
+    || normalized.includes('openclaw：未找到命令')
+    || normalized.includes('openclaw: not found');
 }
 
 function withBundledLinuxOpenClawCommand(route: IntercomRoute): IntercomRoute {
@@ -1303,21 +1391,24 @@ async function runIntercomRouteMessage(params: {
   commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
 }> {
   const sshPassword = params.route.transport === 'ssh' ? await getIntercomSshPassword(params.route.id) : null;
-  const runMessageOnce = async (message: string, route: IntercomRoute) => {
+  const runMessageOnce = async (message: string, route: IntercomRoute, options: { windowsAuto?: boolean } = {}) => {
     const runForMessage = async (targetRoute: IntercomRoute) => {
+      const remoteCommand = options.windowsAuto
+        ? buildWindowsAutoOpenClawCommand(targetRoute, message, params.sessionId)
+        : buildRemoteCommand(targetRoute, message, params.sessionId);
       const invocation = targetRoute.transport === 'ssh' && sshPassword
         ? {
             command: 'ssh2',
             args: [
               `${resolveSshHostAndUsername(targetRoute).username || userInfo().username}@${resolveSshHostAndUsername(targetRoute).host}`,
-              buildRemoteCommand(targetRoute, message, params.sessionId),
+              remoteCommand,
             ],
           }
         : targetRoute.transport === 'ssh'
-          ? buildSshCommand(targetRoute, message, params.sessionId)
+          ? buildSshCommand(targetRoute, message, params.sessionId, options)
           : buildLocalCommand(targetRoute, message, params.sessionId);
       const commandResult = targetRoute.transport === 'ssh' && sshPassword
-        ? await runSsh2Command(targetRoute, sshPassword, message, params.sessionId)
+        ? await runSsh2Command(targetRoute, sshPassword, message, params.sessionId, options)
         : await runIntercomCommand(invocation.command, invocation.args, {
             cwd: 'cwd' in invocation ? invocation.cwd : undefined,
             env: 'env' in invocation ? invocation.env : process.env,
@@ -1328,7 +1419,15 @@ async function runIntercomRouteMessage(params: {
     try {
       return await runForMessage(route);
     } catch (error) {
-      if (!shouldRetryWithBundledLinuxOpenClaw(route, error)) {
+      if (!options.windowsAuto && shouldRetryWithAutoRemoteDiscovery(route, error)) {
+        logger.warn('Retrying intercom command with Windows KTClaw/OpenClaw auto-discovery', {
+          target: params.route.id,
+          host: params.route.host,
+          agent: params.route.agent,
+        });
+        return runMessageOnce(message, route, { windowsAuto: true });
+      }
+      if (!getIntercomErrorText(error).includes('KTClaw executable not found at /usr/ktclaw')) {
         throw error;
       }
       logger.warn('Retrying intercom command with bundled Linux KTClaw OpenClaw entry', {
@@ -1336,7 +1435,7 @@ async function runIntercomRouteMessage(params: {
         host: params.route.host,
         agent: params.route.agent,
       });
-      return runForMessage(withBundledLinuxOpenClawCommand(route));
+      return runMessageOnce(message, withBundledLinuxOpenClawCommand(route));
     }
   };
 
@@ -1368,7 +1467,12 @@ async function runIntercomRouteMessage(params: {
   }
 }
 
-function buildSshCommand(route: IntercomRoute, message: string, sessionId: string) {
+function buildSshCommand(
+  route: IntercomRoute,
+  message: string,
+  sessionId: string,
+  options: { windowsAuto?: boolean } = {},
+) {
   const resolved = resolveSshHostAndUsername(route);
   const host = resolved.username ? `${resolved.username}@${resolved.host}` : resolved.host;
   return {
@@ -1386,18 +1490,28 @@ function buildSshCommand(route: IntercomRoute, message: string, sessionId: strin
       'NumberOfPasswordPrompts=0',
       ...(route.sshPort ? ['-p', String(route.sshPort)] : []),
       host,
-      buildRemoteCommand(route, message, sessionId),
+      options.windowsAuto
+        ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
+        : buildRemoteCommand(route, message, sessionId),
     ],
     cwd: undefined,
     env: process.env,
   };
 }
 
-function runSsh2Command(route: IntercomRoute, password: string, message: string, sessionId: string) {
+function runSsh2Command(
+  route: IntercomRoute,
+  password: string,
+  message: string,
+  sessionId: string,
+  options: { windowsAuto?: boolean } = {},
+) {
   const startedAt = Date.now();
   const resolved = resolveSshHostAndUsername(route);
   const username = resolved.username || userInfo().username;
-  const remoteCommand = buildRemoteCommand(route, message, sessionId);
+  const remoteCommand = options.windowsAuto
+    ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
+    : buildRemoteCommand(route, message, sessionId);
   const connectionConfig: ConnectConfig = {
     host: resolved.host,
     port: route.sshPort ?? 22,

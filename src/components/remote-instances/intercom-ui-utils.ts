@@ -17,8 +17,7 @@ export type IntercomRouteDraft = {
 
 export const DEFAULT_INTERCOM_SESSION_ID = 'intercom';
 export const DEFAULT_INTERCOM_ROUTE_ID = 'linux-ktclaw';
-export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND =
-  'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs';
+export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND = 'openclaw';
 
 export function emptyIntercomRouteDraft(): IntercomRouteDraft {
   return {
