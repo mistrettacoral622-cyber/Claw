@@ -527,6 +527,39 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('if [ -f "$p" ]; then exec sh "$p" "$@"; fi');
   });
 
+  it('does not retry with PowerShell when POSIX auto-discovery runs but cannot find OpenClaw', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stderr: 'KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path.',
+      exitCode: 127,
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await expect(sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    })).rejects.toMatchObject({
+      message: expect.stringContaining('KTClaw/OpenClaw command not found'),
+      exitCode: 127,
+    });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).not.toContain('powershell');
+  });
+
   it('retries default SSH intercom routes with Windows auto-discovery when sh is unavailable', async () => {
     spawnMock
       .mockReturnValueOnce(createProcessMock({

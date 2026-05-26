@@ -1320,14 +1320,15 @@ function shouldRetryWithAutoRemoteDiscovery(route: IntercomRoute, error: unknown
     return false;
   }
   const normalized = getIntercomErrorText(error).toLowerCase();
-  return normalized.includes('ktclaw/openclaw command not found')
-    || normalized.includes('sh: command not found')
+  if (normalized.includes('openclaw') || normalized.includes('ktclaw')) {
+    return false;
+  }
+  return normalized.includes('sh: command not found')
     || normalized.includes('sh: not found')
     || normalized.includes('sh : the term')
     || normalized.includes("'sh' is not recognized")
-    || normalized.includes('openclaw: command not found')
     || normalized.includes('openclaw：未找到命令')
-    || normalized.includes('openclaw: not found');
+    || normalized.includes("'sh' is not recognized");
 }
 
 function withBundledLinuxOpenClawCommand(route: IntercomRoute): IntercomRoute {
