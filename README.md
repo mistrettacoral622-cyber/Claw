@@ -103,6 +103,7 @@ When you target another agent with `@agent`, KTClaw switches into that agent's o
 The chat composer also includes slash commands such as `/new`, `/stop`, `/agent`, `/cwd`, `/memory`, `/cron`, `/settings`, `/export`, and `/image <prompt>` for fast local actions without leaving the keyboard.
 The composer now supports direct camera capture for image attachments, and agent-requested camera use is gated by an inline user confirmation step before the camera preview opens.
 Sidebar global search is available with `Ctrl/Cmd+K`, and now searches sessions, agents, pages, and cached chat-history text. Sessions can be pinned in the Sidebar, and exports remain available via `/export` and the Chat page's `Session` drawer. The Sidebar footer is now a single upload entry for quick file intake.
+After reinstall or data-directory changes, KTClaw also scans current and legacy OpenClaw transcript folders so existing chat history can reappear in the session list instead of being stranded on disk.
 Voice input now uses a bundled local Whisper ASR model for offline speech-to-text in the chat composer. Packaged builds include the model inside the installer, so no provider API key or first-run download is required for microphone transcription.
 
 ### 🧪 Rich Markdown Rendering

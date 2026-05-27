@@ -51,6 +51,11 @@ function prefixChannelSessionLabel(sessionKey: string, label: string): string {
   return label;
 }
 
+function getAgentIdFromSessionKey(sessionKey: string): string {
+  if (!sessionKey.startsWith('agent:')) return 'main';
+  return sessionKey.split(':')[1] || 'main';
+}
+
 function SectionHeader({
   icon: Icon,
   label,
@@ -124,7 +129,7 @@ function SessionSectionHeader({
         type="button"
         aria-label={label}
         onClick={onToggle}
-        className="flex h-11 min-w-0 flex-1 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors hover:bg-[#e5e5ea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0a84ff]/40"
+        className="flex h-11 min-w-0 flex-1 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors hover:bg-[#e5e5ea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
       >
         <MessageSquare className="h-4 w-4 shrink-0" />
         <span className="truncate text-left">{label}</span>
@@ -143,7 +148,7 @@ function SessionSectionHeader({
         aria-label={newSessionLabel}
         title={newSessionLabel}
         onClick={onNewSession}
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#3c3c43] transition-colors hover:bg-[#e5e5ea] hover:text-[#000000] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0a84ff]/40"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[#3c3c43] transition-colors hover:bg-[#e5e5ea] hover:text-[#000000] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
       >
         <Plus className="h-4 w-4" />
       </button>
@@ -205,6 +210,10 @@ export function Sidebar() {
 
   const agents = useAgentsStore((state) => state.agents);
   const fetchAgents = useAgentsStore((state) => state.fetchAgents);
+  const agentNameById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
   const { channels, fetchChannels } = useChannelsStore();
   const { pinnedSessionKeySet, toggleSessionPinned } = usePinnedSessions();
   const activeChannelId = useRightPanelStore((state) => state.activeChannelId);
@@ -515,7 +524,7 @@ export function Sidebar() {
           ) : null}
         </div>
 
-        <div className="mt-4 space-y-2">
+        <div className="mt-3 space-y-1.5">
           <SessionSectionHeader
             label={tSidebar('sessions', 'Sessions')}
             open={sessionsOpen}
@@ -525,9 +534,9 @@ export function Sidebar() {
             onNewSession={handleNewSession}
           />
           {!sidebarCollapsed && sessionsOpen ? (
-            <div className="space-y-2">
+            <div className="space-y-1">
               {sortedSessions.length > 0 ? (
-                <div className="space-y-2">
+                <div className="space-y-1">
                   {sortedSessions.map((session) => {
                     const label =
                       prefixChannelSessionLabel(
@@ -546,6 +555,7 @@ export function Sidebar() {
                         key={session.key}
                         session={session}
                         label={label}
+                        agentName={agentNameById.get(session.agentId || getAgentIdFromSessionKey(session.key))}
                         isPinned={isPinned}
                         isActive={isActive}
                         messagePreview={messagePreview}

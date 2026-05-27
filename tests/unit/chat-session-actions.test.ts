@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invokeIpcMock = vi.fn();
+const hostApiFetchMock = vi.fn();
 
 vi.mock('@/lib/api-client', () => ({
   invokeIpc: (...args: unknown[]) => invokeIpcMock(...args),
+}));
+
+vi.mock('@/lib/host-api', () => ({
+  hostApiFetch: (...args: unknown[]) => hostApiFetchMock(...args),
 }));
 
 type ChatLikeState = {
@@ -55,6 +60,7 @@ describe('chat session actions', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     invokeIpcMock.mockResolvedValue({ success: true });
+    hostApiFetchMock.mockResolvedValue({ sessions: [] });
   });
 
   it('switchSession removes empty non-main leaving session and loads history', async () => {
@@ -177,6 +183,46 @@ describe('chat session actions', () => {
     expect(h.read().sessionLastActivity['agent:main:main']).toBe(1773281700000);
     expect(h.read().sessionLastActivity['agent:main:cron:job-1']).toBe(1773281731621);
     expect(h.read().sessions.find((session) => session.key === 'agent:main:cron:job-1')?.updatedAt).toBe(1773281731621);
+  });
+
+  it('merges recoverable disk sessions into the session list', async () => {
+    const { createSessionActions } = await import('@/stores/chat/session-actions');
+    const h = makeHarness({
+      currentSessionKey: 'agent:main:main',
+      sessions: [],
+    });
+    const actions = createSessionActions(h.set as never, h.get as never);
+
+    invokeIpcMock.mockResolvedValueOnce({
+      success: true,
+      result: {
+        sessions: [
+          {
+            key: 'agent:main:main',
+            displayName: 'Main',
+            updatedAt: 1773281700000,
+          },
+        ],
+      },
+    });
+    hostApiFetchMock.mockResolvedValueOnce({
+      sessions: [
+        {
+          key: 'agent:main:session-restored',
+          displayName: 'Restored',
+          updatedAt: 1773281800000,
+          agentId: 'main',
+        },
+      ],
+    });
+
+    await actions.loadSessions();
+
+    expect(hostApiFetchMock).toHaveBeenCalledWith('/api/sessions/discovered');
+    expect(h.read().sessions.map((session) => session.key)).toEqual([
+      'agent:main:session-restored',
+      'agent:main:main',
+    ]);
   });
 });
 

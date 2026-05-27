@@ -3,11 +3,12 @@
  * Collapsible session group with persistent state (team sessions vs personal sessions).
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight, MessageSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SessionItem } from './SessionItem';
 import type { ChatSession } from '@/stores/chat';
+import { useAgentsStore } from '@/stores/agents';
 
 const SESSION_GROUPS_STATE_KEY = 'ktclaw-session-groups-state';
 
@@ -36,6 +37,13 @@ function writeGroupState(state: SessionGroupState): void {
   localStorage.setItem(SESSION_GROUPS_STATE_KEY, JSON.stringify(state));
 }
 
+function getAgentIdFromSession(session: ChatSession): string {
+  if (session.targetAgentId) return session.targetAgentId;
+  if (session.agentId) return session.agentId;
+  if (!session.key.startsWith('agent:')) return 'main';
+  return session.key.split(':')[1] || 'main';
+}
+
 interface SessionGroupProps {
   title: string;
   sessions: ChatSession[];
@@ -43,7 +51,7 @@ interface SessionGroupProps {
   currentSessionKey: string | null;
   pinnedSessionKeySet: Set<string>;
   sessionLabels: Record<string, string>;
-  sessionMessages: Map<string, any[]>;
+  sessionMessages: Map<string, Array<{ content?: unknown }>>;
   onSessionClick: (key: string) => void;
   onPinToggle: (key: string) => void;
   onDelete: (key: string) => void;
@@ -64,7 +72,12 @@ export function SessionGroup({
   collapsed,
 }: SessionGroupProps) {
   const [groupState, setGroupState] = useState<SessionGroupState>(readGroupState);
+  const agents = useAgentsStore((state) => state.agents);
   const isOpen = groupState[groupKey];
+  const agentNameById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
 
   useEffect(() => {
     const state = readGroupState();
@@ -99,7 +112,7 @@ export function SessionGroup({
   };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       {/* Section Header */}
       <button
         type="button"
@@ -126,7 +139,7 @@ export function SessionGroup({
 
       {/* Session List */}
       {!collapsed && isOpen ? (
-        <div className="space-y-2">
+        <div className="space-y-1">
           {sortedSessions.length > 0 ? (
             sortedSessions.map((session) => {
               const label =
@@ -145,6 +158,7 @@ export function SessionGroup({
                   label={label}
                   isPinned={isPinned}
                   isActive={isActive}
+                  agentName={agentNameById.get(getAgentIdFromSession(session)) ?? getAgentIdFromSession(session)}
                   messagePreview={messagePreview}
                   onClick={() => onSessionClick(session.key)}
                   onPinToggle={() => onPinToggle(session.key)}

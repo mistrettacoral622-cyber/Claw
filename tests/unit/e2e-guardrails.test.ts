@@ -74,6 +74,7 @@ describe('E2E / release smoke guardrails', () => {
     const mainProcess = readFileSync(resolve(process.cwd(), 'electron/main/index.ts'), 'utf8');
 
     expect(startupSmoke).toContain('KTCLAW_STARTUP_SMOKE_WAIT_FOR_GATEWAY');
+    expect(startupSmoke).toContain('OPENCLAW_DISABLE_BONJOUR');
     expect(mainProcess).toContain('STARTUP_SMOKE_WAIT_FOR_GATEWAY');
     expect(mainProcess).toContain('startupSmokeRendererLoaded');
     expect(mainProcess).toContain('startupSmokeGatewayRunning');

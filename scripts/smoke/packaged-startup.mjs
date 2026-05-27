@@ -136,6 +136,10 @@ async function main() {
       KTCLAW_STARTUP_SMOKE_WAIT_FOR_GATEWAY: '1',
       KTCLAW_STARTUP_SMOKE_TIMEOUT_MS: String(Math.max(15_000, timeoutMs - 5_000)),
       KTCLAW_LOG_TO_CONSOLE: '1',
+      // GitHub macOS runners can expose a constrained mDNS environment where
+      // @homebridge/ciao aborts during Bonjour probing. Startup smoke only
+      // validates packaged app/Gateway readiness, so LAN discovery is noise here.
+      OPENCLAW_DISABLE_BONJOUR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,

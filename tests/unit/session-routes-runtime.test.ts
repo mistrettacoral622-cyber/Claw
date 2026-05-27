@@ -4,11 +4,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   sendJson: vi.fn(),
   parseJsonBody: vi.fn(async (req: IncomingMessage & { __body?: unknown }) => req.__body ?? {}),
+  listRecoverableChatSessions: vi.fn(),
+  readRecoverableChatHistory: vi.fn(),
 }));
 
 vi.mock('@electron/api/route-utils', () => ({
   sendJson: mocks.sendJson,
   parseJsonBody: mocks.parseJsonBody,
+}));
+
+vi.mock('@electron/utils/session-recovery', () => ({
+  listRecoverableChatSessions: mocks.listRecoverableChatSessions,
+  readRecoverableChatHistory: mocks.readRecoverableChatHistory,
 }));
 
 function createRequest(
@@ -25,6 +32,73 @@ describe('session runtime routes', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.listRecoverableChatSessions.mockResolvedValue([]);
+    mocks.readRecoverableChatHistory.mockResolvedValue({ messages: [], recovered: false });
+  });
+
+  it('lists recoverable chat sessions from disk', async () => {
+    const { handleSessionRoutes } = await import('@electron/api/routes/sessions');
+    mocks.listRecoverableChatSessions.mockResolvedValueOnce([
+      {
+        key: 'agent:main:session-restored',
+        displayName: 'Restored',
+        updatedAt: 1773281800000,
+        agentId: 'main',
+        recovered: true,
+      },
+    ]);
+
+    const handled = await handleSessionRoutes(
+      createRequest('GET'),
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/sessions/discovered'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(mocks.sendJson).toHaveBeenLastCalledWith(expect.anything(), 200, {
+      success: true,
+      sessions: [
+        expect.objectContaining({
+          key: 'agent:main:session-restored',
+          recovered: true,
+        }),
+      ],
+    });
+  });
+
+  it('loads recovered chat history by session key', async () => {
+    const { handleSessionRoutes } = await import('@electron/api/routes/sessions');
+    mocks.readRecoverableChatHistory.mockResolvedValueOnce({
+      recovered: true,
+      messages: [
+        {
+          id: 'msg-1',
+          role: 'assistant',
+          content: 'Recovered answer',
+          timestamp: 1773281800000,
+        },
+      ],
+    });
+
+    const handled = await handleSessionRoutes(
+      createRequest('GET'),
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/sessions/recovered-history?sessionKey=agent%3Amain%3Asession-restored&limit=50'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(mocks.readRecoverableChatHistory).toHaveBeenCalledWith('agent:main:session-restored', 50);
+    expect(mocks.sendJson).toHaveBeenLastCalledWith(expect.anything(), 200, {
+      success: true,
+      recovered: true,
+      messages: [
+        expect.objectContaining({
+          content: 'Recovered answer',
+        }),
+      ],
+    });
   });
 
   it('spawns and lists subagent runtime sessions through async runtime manager', async () => {

@@ -11,6 +11,7 @@ import {
 } from './helpers';
 import type { ChatSession, RawMessage } from './types';
 import type { ChatGet, ChatSet, RuntimeActions } from './store-api';
+import { deriveSessionLabelFromMessages } from './session-label-utils';
 
 function hasImageAttachments(
   attachments?: Array<{ mimeType: string }> | null,
@@ -151,8 +152,10 @@ export function createRuntimeSendActions(set: ChatSet, get: ChatGet): Pick<Runti
       const { sessionLabels, messages } = get();
       const isFirstMessage = !messages.slice(0, -1).some((m) => m.role === 'user');
       if (!currentSessionKey.endsWith(':main') && isFirstMessage && !sessionLabels[currentSessionKey] && trimmed) {
-        const truncated = trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed;
-        set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated } }));
+        const labelText = deriveSessionLabelFromMessages([{ role: 'user', content: trimmed }]);
+        if (labelText) {
+          set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: labelText } }));
+        }
       }
 
       // Mark this session as most recently active

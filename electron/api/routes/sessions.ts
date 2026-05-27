@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { join } from 'node:path';
 import { getOpenClawConfigDir } from '../../utils/paths';
+import {
+  listRecoverableChatSessions,
+  readRecoverableChatHistory,
+} from '../../utils/session-recovery';
 import type { HostApiContext } from '../context';
 import { parseJsonBody, sendJson } from '../route-utils';
 
@@ -10,6 +14,35 @@ export async function handleSessionRoutes(
   url: URL,
   ctx: HostApiContext,
 ): Promise<boolean> {
+  if (url.pathname === '/api/sessions/discovered' && req.method === 'GET') {
+    try {
+      const sessions = await listRecoverableChatSessions();
+      sendJson(res, 200, { success: true, sessions });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/sessions/recovered-history' && req.method === 'GET') {
+    try {
+      const sessionKey = url.searchParams.get('sessionKey')?.trim() || '';
+      if (!sessionKey) {
+        sendJson(res, 400, { success: false, error: 'sessionKey is required' });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '200', 10);
+      const history = await readRecoverableChatHistory(
+        sessionKey,
+        Number.isFinite(limit) && limit > 0 ? limit : 200,
+      );
+      sendJson(res, 200, { success: true, ...history });
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: String(error) });
+    }
+    return true;
+  }
+
   if (url.pathname === '/api/sessions/spawn' && req.method === 'POST') {
     try {
       const body = await parseJsonBody<{

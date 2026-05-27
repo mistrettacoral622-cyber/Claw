@@ -115,17 +115,29 @@ describe('chat history actions', () => {
     expect(h.read().loading).toBe(false);
   });
 
-  it('does not use cron fallback for normal sessions', async () => {
+  it('uses recovered transcript fallback for normal sessions when gateway history is empty', async () => {
     const { createHistoryActions } = await import('@/stores/chat/history-actions');
     const h = makeHarness({
       currentSessionKey: 'agent:main:main',
     });
     const actions = createHistoryActions(h.set as never, h.get as never);
+    hostApiFetchMock.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 'recovered-1',
+          role: 'assistant',
+          content: 'Restored from disk',
+          timestamp: 1773281700000,
+        },
+      ],
+    });
 
     await actions.loadHistory();
 
-    expect(hostApiFetchMock).not.toHaveBeenCalled();
-    expect(h.read().messages).toEqual([]);
+    expect(hostApiFetchMock).toHaveBeenCalledWith(
+      '/api/sessions/recovered-history?sessionKey=agent%3Amain%3Amain&limit=200',
+    );
+    expect(h.read().messages.map((message) => message.content)).toEqual(['Restored from disk']);
     expect(h.read().loading).toBe(false);
   });
 });

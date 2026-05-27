@@ -28,6 +28,7 @@ import { useProviderStore } from './providers';
 import { useSettingsStore } from './settings';
 import { mergeLocalUserAttachmentMetadata } from './chat/attachment-history';
 import { buildCronSessionHistoryPath, isCronSessionKey } from './chat/cron-session-utils';
+import { deriveSessionLabelFromMessages } from './chat/session-label-utils';
 import {
   getUnreadCounts,
   saveUnreadCounts,
@@ -981,6 +982,71 @@ async function loadCronFallbackMessages(sessionKey: string, limit = 200): Promis
   }
 }
 
+async function loadRecoveredSessions(): Promise<ChatSession[]> {
+  try {
+    const response = await hostApiFetch<{ sessions?: ChatSession[] }>('/api/sessions/discovered');
+    return Array.isArray(response.sessions)
+      ? response.sessions
+        .filter((session) => session && typeof session.key === 'string' && session.key.trim())
+        .map((session) => ({
+          ...session,
+          key: session.key.trim(),
+          agentId: session.agentId || getAgentIdFromSessionKey(session.key),
+          updatedAt: parseSessionUpdatedAtMs(session.updatedAt),
+        }))
+      : [];
+  } catch (error) {
+    console.warn('Failed to discover recoverable sessions:', error);
+    return [];
+  }
+}
+
+async function loadRecoveredHistoryMessages(sessionKey: string, limit = 200): Promise<RawMessage[]> {
+  try {
+    const response = await hostApiFetch<{ messages?: RawMessage[] }>(
+      `/api/sessions/recovered-history?sessionKey=${encodeURIComponent(sessionKey)}&limit=${limit}`,
+    );
+    return Array.isArray(response.messages) ? response.messages : [];
+  } catch (error) {
+    console.warn('Failed to load recovered session history:', error);
+    return [];
+  }
+}
+
+function mergeSessionLists(primary: ChatSession[], recovered: ChatSession[]): ChatSession[] {
+  const byKey = new Map<string, ChatSession>();
+  for (const session of recovered) {
+    byKey.set(session.key, session);
+  }
+  for (const session of primary) {
+    const existing = byKey.get(session.key);
+    byKey.set(session.key, {
+      ...existing,
+      ...session,
+      agentId: session.agentId || existing?.agentId || getAgentIdFromSessionKey(session.key),
+      updatedAt: session.updatedAt ?? existing?.updatedAt,
+    });
+  }
+  return [...byKey.values()].sort((left, right) => (
+    (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+      || left.key.localeCompare(right.key)
+  ));
+}
+
+async function loadHistoryMessagesForSessionLabel(sessionKey: string): Promise<RawMessage[]> {
+  try {
+    const result = await useGatewayStore.getState().rpc<Record<string, unknown>>(
+      'chat.history',
+      { sessionKey, limit: 1000 },
+    );
+    const messages = Array.isArray(result.messages) ? result.messages as RawMessage[] : [];
+    if (messages.length > 0) return messages;
+  } catch {
+    // Fall back to transcript recovery below.
+  }
+  return loadRecoveredHistoryMessages(sessionKey, 1000);
+}
+
 function normalizeAgentId(value: string | undefined | null): string {
   return (value ?? '').trim().toLowerCase() || 'main';
 }
@@ -1376,17 +1442,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     _loadSessionsInFlight = (async () => {
       try {
-        const data = await useGatewayStore.getState().rpc<Record<string, unknown>>('sessions.list', {});
-        if (data) {
-          const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => ({
-            key: String(s.key || ''),
+        let data: Record<string, unknown> | null = null;
+        try {
+          data = await useGatewayStore.getState().rpc<Record<string, unknown>>('sessions.list', {});
+        } catch (error) {
+          console.warn('Failed to load gateway sessions:', error);
+        }
+
+        const rawSessions = data && Array.isArray(data.sessions) ? data.sessions : [];
+        const gatewaySessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
+          const key = String(s.key || '');
+          return {
+            key,
             label: s.label ? String(s.label) : undefined,
             displayName: s.displayName ? String(s.displayName) : undefined,
             thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
             model: s.model ? String(s.model) : undefined,
+            agentId: key ? getAgentIdFromSessionKey(key) : undefined,
             updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
-          })).filter((s: ChatSession) => s.key);
+          };
+        }).filter((s: ChatSession) => s.key);
+        const sessions = mergeSessionLists(gatewaySessions, await loadRecoveredSessions());
+
+        if (data || sessions.length > 0) {
 
           const canonicalBySuffix = new Map<string, string>();
           for (const session of sessions) {
@@ -1468,20 +1546,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             void Promise.all(
               sessionsToLabel.map(async (session) => {
                 try {
-                  const r = await useGatewayStore.getState().rpc<Record<string, unknown>>(
-                    'chat.history',
-                    { sessionKey: session.key, limit: 1000 },
-                  );
-                  const msgs = Array.isArray(r.messages) ? r.messages as RawMessage[] : [];
+                  const msgs = await loadHistoryMessagesForSessionLabel(session.key);
                   const firstUser = msgs.find((m) => m.role === 'user');
                   const lastMsg = msgs[msgs.length - 1];
                   set((s) => {
                     const next: Partial<typeof s> = {};
                     if (firstUser) {
-                      const labelText = getMessageText(firstUser.content).trim();
+                      const labelText = deriveSessionLabelFromMessages(msgs);
                       if (labelText) {
-                        const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
-                        next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };
+                        next.sessionLabels = { ...s.sessionLabels, [session.key]: labelText };
                       }
                     }
                     if (lastMsg?.timestamp) {
@@ -1762,11 +1835,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!isMainSession) {
         const firstUserMsg = finalMessages.find((m) => m.role === 'user');
         if (firstUserMsg) {
-          const labelText = getMessageText(firstUserMsg.content).trim();
+          const labelText = deriveSessionLabelFromMessages(finalMessages);
           if (labelText) {
-            const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
             set((s) => ({
-              sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated },
+              sessionLabels: { ...s.sessionLabels, [currentSessionKey]: labelText },
             }));
           }
         }
@@ -1848,10 +1920,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (rawMessages.length === 0 && isCronSessionKey(effectiveSessionKey)) {
             rawMessages = await loadCronFallbackMessages(effectiveSessionKey, 200);
           }
+          if (rawMessages.length === 0) {
+            rawMessages = await loadRecoveredHistoryMessages(effectiveSessionKey, 200);
+          }
 
           applyLoadedMessages(rawMessages, thinkingLevel);
         } else {
-          const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+          let fallbackMessages = await loadCronFallbackMessages(effectiveSessionKey, 200);
+          if (fallbackMessages.length === 0) {
+            fallbackMessages = await loadRecoveredHistoryMessages(effectiveSessionKey, 200);
+          }
           if (fallbackMessages.length > 0) {
             applyLoadedMessages(fallbackMessages, null);
           } else if (isHistoryRequestCurrent(get, currentSessionKey, requestSeq)) {
@@ -1860,7 +1938,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       } catch (err) {
         console.warn('Failed to load chat history:', err);
-        const fallbackMessages = await loadCronFallbackMessages(effectiveSessionKey, 200);
+        let fallbackMessages = await loadCronFallbackMessages(effectiveSessionKey, 200);
+        if (fallbackMessages.length === 0) {
+          fallbackMessages = await loadRecoveredHistoryMessages(effectiveSessionKey, 200);
+        }
         if (fallbackMessages.length > 0) {
           applyLoadedMessages(fallbackMessages, null);
         } else if (isHistoryRequestCurrent(get, currentSessionKey, requestSeq)) {
@@ -1959,8 +2040,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { sessionLabels, messages } = get();
     const isFirstMessage = !messages.slice(0, -1).some((m) => m.role === 'user');
     if (!currentSessionKey.endsWith(':main') && isFirstMessage && !sessionLabels[currentSessionKey] && trimmed) {
-      const truncated = trimmed.length > 50 ? `${trimmed.slice(0, 50)}…` : trimmed;
-      set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated } }));
+      const labelText = deriveSessionLabelFromMessages([{ role: 'user', content: trimmed }]);
+      if (labelText) {
+        set((s) => ({ sessionLabels: { ...s.sessionLabels, [currentSessionKey]: labelText } }));
+      }
     }
 
     // Mark this session as most recently active

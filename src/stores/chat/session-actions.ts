@@ -1,13 +1,14 @@
 import { invokeIpc } from '@/lib/api-client';
+import { hostApiFetch } from '@/lib/host-api';
 import {
   clearErrorRecoveryTimer,
   clearHistoryPoll,
   getCanonicalPrefixFromSessions,
-  getMessageText,
   toMs,
 } from './helpers';
 import { DEFAULT_CANONICAL_PREFIX, DEFAULT_SESSION_KEY, type ChatSession, type RawMessage } from './types';
 import type { ChatGet, ChatSet, SessionHistoryActions } from './store-api';
+import { deriveSessionLabelFromMessages } from './session-label-utils';
 
 function getAgentIdFromSessionKey(sessionKey: string): string {
   if (!sessionKey.startsWith('agent:')) return 'main';
@@ -28,6 +29,72 @@ function parseSessionUpdatedAtMs(value: unknown): number | undefined {
   return undefined;
 }
 
+async function loadRecoveredSessions(): Promise<ChatSession[]> {
+  try {
+    const response = await hostApiFetch<{ sessions?: ChatSession[] }>('/api/sessions/discovered');
+    return Array.isArray(response.sessions)
+      ? response.sessions
+        .filter((session) => session && typeof session.key === 'string' && session.key.trim())
+        .map((session) => ({
+          ...session,
+          key: session.key.trim(),
+          agentId: session.agentId || getAgentIdFromSessionKey(session.key),
+          updatedAt: parseSessionUpdatedAtMs(session.updatedAt),
+        }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function mergeSessionLists(primary: ChatSession[], recovered: ChatSession[]): ChatSession[] {
+  const byKey = new Map<string, ChatSession>();
+  for (const session of recovered) {
+    byKey.set(session.key, session);
+  }
+  for (const session of primary) {
+    const existing = byKey.get(session.key);
+    byKey.set(session.key, {
+      ...existing,
+      ...session,
+      agentId: session.agentId || existing?.agentId || getAgentIdFromSessionKey(session.key),
+      updatedAt: session.updatedAt ?? existing?.updatedAt,
+    });
+  }
+  return [...byKey.values()].sort((left, right) => (
+    (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+      || left.key.localeCompare(right.key)
+  ));
+}
+
+async function loadRecoveredHistoryMessages(sessionKey: string, limit = 200): Promise<RawMessage[]> {
+  try {
+    const response = await hostApiFetch<{ messages?: RawMessage[] }>(
+      `/api/sessions/recovered-history?sessionKey=${encodeURIComponent(sessionKey)}&limit=${limit}`,
+    );
+    return Array.isArray(response.messages) ? response.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+async function loadHistoryMessagesForSessionLabel(sessionKey: string): Promise<RawMessage[]> {
+  try {
+    const r = await invokeIpc(
+      'gateway:rpc',
+      'chat.history',
+      { sessionKey, limit: 1000 },
+    ) as { success: boolean; result?: Record<string, unknown> };
+    if (r.success && r.result) {
+      const messages = Array.isArray(r.result.messages) ? r.result.messages as RawMessage[] : [];
+      if (messages.length > 0) return messages;
+    }
+  } catch {
+    // Fall back to transcript recovery below.
+  }
+  return loadRecoveredHistoryMessages(sessionKey, 1000);
+}
+
 export function createSessionActions(
   set: ChatSet,
   get: ChatGet,
@@ -44,14 +111,19 @@ export function createSessionActions(
         if (result.success && result.result) {
           const data = result.result;
           const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const sessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => ({
-            key: String(s.key || ''),
-            label: s.label ? String(s.label) : undefined,
-            displayName: s.displayName ? String(s.displayName) : undefined,
-            thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
-            model: s.model ? String(s.model) : undefined,
-            updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
-          })).filter((s: ChatSession) => s.key);
+          const gatewaySessions: ChatSession[] = rawSessions.map((s: Record<string, unknown>) => {
+            const key = String(s.key || '');
+            return {
+              key,
+              label: s.label ? String(s.label) : undefined,
+              displayName: s.displayName ? String(s.displayName) : undefined,
+              thinkingLevel: s.thinkingLevel ? String(s.thinkingLevel) : undefined,
+              model: s.model ? String(s.model) : undefined,
+              agentId: key ? getAgentIdFromSessionKey(key) : undefined,
+              updatedAt: parseSessionUpdatedAtMs(s.updatedAt),
+            };
+          }).filter((s: ChatSession) => s.key);
+          const sessions = mergeSessionLists(gatewaySessions, await loadRecoveredSessions());
 
           const canonicalBySuffix = new Map<string, string>();
           for (const session of sessions) {
@@ -123,22 +195,15 @@ export function createSessionActions(
             void Promise.all(
               sessionsToLabel.map(async (session) => {
                 try {
-                  const r = await invokeIpc(
-                    'gateway:rpc',
-                    'chat.history',
-                    { sessionKey: session.key, limit: 1000 },
-                  ) as { success: boolean; result?: Record<string, unknown> };
-                  if (!r.success || !r.result) return;
-                  const msgs = Array.isArray(r.result.messages) ? r.result.messages as RawMessage[] : [];
+                  const msgs = await loadHistoryMessagesForSessionLabel(session.key);
                   const firstUser = msgs.find((m) => m.role === 'user');
                   const lastMsg = msgs[msgs.length - 1];
                   set((s) => {
                     const next: Partial<typeof s> = {};
                     if (firstUser) {
-                      const labelText = getMessageText(firstUser.content).trim();
+                      const labelText = deriveSessionLabelFromMessages(msgs);
                       if (labelText) {
-                        const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
-                        next.sessionLabels = { ...s.sessionLabels, [session.key]: truncated };
+                        next.sessionLabels = { ...s.sessionLabels, [session.key]: labelText };
                       }
                     }
                     if (lastMsg?.timestamp) {

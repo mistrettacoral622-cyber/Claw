@@ -41,6 +41,11 @@ type SearchResult =
       matchedText?: string;
     };
 
+function getAgentIdFromSessionKey(sessionKey: string): string {
+  if (!sessionKey.startsWith('agent:')) return 'main';
+  return sessionKey.split(':')[1] || 'main';
+}
+
 export function SessionSearchModal({ isOpen, onClose }: SessionSearchModalProps) {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
@@ -56,6 +61,10 @@ export function SessionSearchModal({ isOpen, onClose }: SessionSearchModalProps)
   const deleteSession = useChatStore((state) => state.deleteSession);
 
   const agents = useAgentsStore((state) => state.agents);
+  const agentNameById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
   const channels = useChannelsStore((state) => state.channels);
   const { pinnedSessionKeySet, toggleSessionPinned } = usePinnedSessions();
 
@@ -292,6 +301,7 @@ export function SessionSearchModal({ isOpen, onClose }: SessionSearchModalProps)
                       <SessionItem
                         session={session}
                         label={result.label}
+                        agentName={agentNameById.get(session.agentId || getAgentIdFromSessionKey(session.key))}
                         isPinned={result.isPinned}
                         isActive={result.isActive}
                         messagePreview=""

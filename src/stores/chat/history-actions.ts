@@ -4,7 +4,6 @@ import {
   clearHistoryPoll,
   enrichWithCachedImages,
   enrichWithToolResultFiles,
-  getMessageText,
   hasNonToolAssistantContent,
   isToolResultRole,
   loadMissingPreviews,
@@ -14,6 +13,7 @@ import { buildCronSessionHistoryPath, isCronSessionKey } from './cron-session-ut
 import { mergeLocalUserAttachmentMetadata } from './attachment-history';
 import type { RawMessage } from './types';
 import type { ChatGet, ChatSet, SessionHistoryActions } from './store-api';
+import { deriveSessionLabelFromMessages } from './session-label-utils';
 
 async function loadCronFallbackMessages(sessionKey: string, limit = 200): Promise<RawMessage[]> {
   if (!isCronSessionKey(sessionKey)) return [];
@@ -24,6 +24,18 @@ async function loadCronFallbackMessages(sessionKey: string, limit = 200): Promis
     return Array.isArray(response.messages) ? response.messages : [];
   } catch (error) {
     console.warn('Failed to load cron fallback history:', error);
+    return [];
+  }
+}
+
+async function loadRecoveredHistoryMessages(sessionKey: string, limit = 200): Promise<RawMessage[]> {
+  try {
+    const response = await hostApiFetch<{ messages?: RawMessage[] }>(
+      `/api/sessions/recovered-history?sessionKey=${encodeURIComponent(sessionKey)}&limit=${limit}`,
+    );
+    return Array.isArray(response.messages) ? response.messages : [];
+  } catch (error) {
+    console.warn('Failed to load recovered session history:', error);
     return [];
   }
 }
@@ -104,11 +116,10 @@ export function createHistoryActions(
         if (!isMainSession) {
           const firstUserMsg = finalMessages.find((m) => m.role === 'user');
           if (firstUserMsg) {
-            const labelText = getMessageText(firstUserMsg.content).trim();
+            const labelText = deriveSessionLabelFromMessages(finalMessages);
             if (labelText) {
-              const truncated = labelText.length > 50 ? `${labelText.slice(0, 50)}…` : labelText;
               set((s) => ({
-                sessionLabels: { ...s.sessionLabels, [currentSessionKey]: truncated },
+                sessionLabels: { ...s.sessionLabels, [currentSessionKey]: labelText },
               }));
             }
           }
@@ -187,9 +198,15 @@ export function createHistoryActions(
           if (rawMessages.length === 0 && isCronSessionKey(currentSessionKey)) {
             rawMessages = await loadCronFallbackMessages(currentSessionKey, 200);
           }
+          if (rawMessages.length === 0) {
+            rawMessages = await loadRecoveredHistoryMessages(currentSessionKey, 200);
+          }
           applyLoadedMessages(rawMessages, thinkingLevel);
         } else {
-          const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+          let fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+          if (fallbackMessages.length === 0) {
+            fallbackMessages = await loadRecoveredHistoryMessages(currentSessionKey, 200);
+          }
           if (fallbackMessages.length > 0) {
             applyLoadedMessages(fallbackMessages, null);
           } else {
@@ -198,7 +215,10 @@ export function createHistoryActions(
         }
       } catch (err) {
         console.warn('Failed to load chat history:', err);
-        const fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+        let fallbackMessages = await loadCronFallbackMessages(currentSessionKey, 200);
+        if (fallbackMessages.length === 0) {
+          fallbackMessages = await loadRecoveredHistoryMessages(currentSessionKey, 200);
+        }
         if (fallbackMessages.length > 0) {
           applyLoadedMessages(fallbackMessages, null);
         } else {
