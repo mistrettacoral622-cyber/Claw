@@ -799,7 +799,7 @@ describe('intercom service', () => {
 
     expect(result).toEqual(expect.objectContaining({
       success: true,
-      summary: 'completed',
+      summary: 'Screenshot saved',
       artifacts: [
         expect.objectContaining({
           type: 'image',
@@ -807,6 +807,33 @@ describe('intercom service', () => {
           mimeType: 'image/png',
         }),
       ],
+    }));
+  });
+
+  it('prefers payload text over generic completed summaries in wrapped task output', async () => {
+    const { normalizeIntercomRemoteTaskResult } = await import('@electron/services/intercom');
+
+    const result = normalizeIntercomRemoteTaskResult(JSON.stringify({
+      runId: 'run-1',
+      status: 'ok',
+      summary: 'completed',
+      result: {
+        payloads: [
+          {
+            content: [
+              {
+                text: '这是文件里的正文摘要。',
+              },
+            ],
+          },
+        ],
+      },
+    }));
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      summary: '这是文件里的正文摘要。',
+      artifacts: [],
     }));
   });
 

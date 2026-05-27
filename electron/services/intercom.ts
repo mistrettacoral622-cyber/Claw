@@ -1054,6 +1054,85 @@ function collectAssistantTexts(value: unknown, texts: string[], seen = new Set<u
   }
 }
 
+function isGenericRemoteTaskSummary(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'completed'
+    || normalized === 'complete'
+    || normalized === 'done'
+    || normalized === 'ok'
+    || normalized === 'success'
+    || normalized === 'task completed'
+    || normalized === 'remote task completed';
+}
+
+function pushRemoteTaskText(texts: string[], value: string): void {
+  const text = value.trim();
+  if (!text || texts.at(-1) === text) {
+    return;
+  }
+  texts.push(text);
+}
+
+function collectRemoteTaskTexts(value: unknown, texts: string[], seen = new Set<unknown>(), depth = 0): void {
+  if (depth > 10 || value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === 'string') {
+    const parsed = parseIntercomJson(value);
+    if (parsed !== null) {
+      collectRemoteTaskTexts(parsed, texts, seen, depth + 1);
+    }
+    return;
+  }
+  if (typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectRemoteTaskTexts(entry, texts, seen, depth + 1);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    return;
+  }
+
+  const text = typeof value.text === 'string' ? value.text.trim() : '';
+  if (text) {
+    const parsedText = parseIntercomJson(text);
+    if (parsedText !== null) {
+      collectRemoteTaskTexts(parsedText, texts, seen, depth + 1);
+    } else {
+      pushRemoteTaskText(texts, text);
+    }
+  }
+
+  const summary = readText(value.summary);
+  if (summary && !isGenericRemoteTaskSummary(summary)) {
+    pushRemoteTaskText(texts, summary);
+  }
+
+  for (const key of ['result', 'data', 'message', 'output', 'response', 'content', 'payload', 'payloads', 'messages']) {
+    collectRemoteTaskTexts(value[key], texts, seen, depth + 1);
+  }
+}
+
+function selectRemoteTaskSummary(value: Record<string, unknown>): string {
+  const directSummary = readText(value.summary ?? value.message ?? value.output ?? value.response);
+  const assistantTexts: string[] = [];
+  collectAssistantTexts(value, assistantTexts);
+  const payloadTexts: string[] = [];
+  collectRemoteTaskTexts(value, payloadTexts);
+  const meaningfulPayloadText = [...payloadTexts].reverse().find((text) => !isGenericRemoteTaskSummary(text))
+    || [...assistantTexts].reverse().find((text) => !isGenericRemoteTaskSummary(text));
+
+  if (!directSummary || isGenericRemoteTaskSummary(directSummary)) {
+    return meaningfulPayloadText || directSummary || '';
+  }
+  return directSummary;
+}
+
 function findTaskResultCandidate(value: unknown, seen = new Set<unknown>(), depth = 0): Record<string, unknown> | null {
   if (typeof value === 'string') {
     const parsed = parseIntercomJson(value);
@@ -1219,11 +1298,7 @@ function normalizeArtifact(value: unknown): IntercomRemoteTaskArtifact | null {
 }
 
 function normalizeTaskResultFromObject(value: Record<string, unknown>, stdout: string): IntercomRemoteTaskResult {
-  const assistantTexts: string[] = [];
-  collectAssistantTexts(value, assistantTexts);
-  const summary = readText(value.summary ?? value.message ?? value.output ?? value.response)
-    || assistantTexts.at(-1)
-    || '';
+  const summary = selectRemoteTaskSummary(value);
   const logs = readText(value.logs ?? value.log ?? value.stderr ?? value.stdout) || stdout;
   const artifacts = collectArtifactCandidates(value);
   const rawError = value.error ?? value.message;
@@ -1257,7 +1332,9 @@ export function normalizeIntercomRemoteTaskResult(stdout: string): IntercomRemot
     }
     const assistantTexts: string[] = [];
     collectAssistantTexts(parsed, assistantTexts);
-    const text = assistantTexts.at(-1) || readText(parsed);
+    const payloadTexts: string[] = [];
+    collectRemoteTaskTexts(parsed, payloadTexts);
+    const text = payloadTexts.at(-1) || assistantTexts.at(-1) || readText(parsed);
     return {
       success: true,
       summary: text,

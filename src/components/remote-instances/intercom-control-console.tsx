@@ -330,6 +330,7 @@ export function IntercomControlConsole() {
     !saving &&
     Boolean(routeDraft.host.trim()) &&
     Boolean(routeDraft.agent.trim());
+  const hasSendableFiles = stagedFiles.some((file) => file.status === 'ready' || file.status === 'uploaded');
   const canSend =
     !sending &&
     Boolean(messageDraft.sender.trim()) &&
@@ -339,7 +340,8 @@ export function IntercomControlConsole() {
     !sending &&
     Boolean(messageDraft.sender.trim()) &&
     Boolean(selectedRoute) &&
-    (Boolean(messageDraft.message.trim()) || stagedFiles.some((file) => file.status === 'ready' || file.status === 'uploaded'));
+    (Boolean(messageDraft.message.trim()) || hasSendableFiles);
+  const canPrimarySend = hasSendableFiles ? canSendTask : canSend;
 
   const openNewRouteConfig = () => {
     setRouteDraft(emptyIntercomRouteDraft());
@@ -606,13 +608,21 @@ export function IntercomControlConsole() {
     }
   };
 
+  const handlePrimarySend = async () => {
+    if (hasSendableFiles) {
+      await handleSendTask();
+      return;
+    }
+    await handleSendMessage();
+  };
+
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
       return;
     }
     event.preventDefault();
-    if (canSend) {
-      void handleSendMessage();
+    if (canPrimarySend) {
+      void handlePrimarySend();
     }
   };
 
@@ -966,17 +976,6 @@ export function IntercomControlConsole() {
                   variant="outline"
                   size="sm"
                   className="gap-2"
-                  onClick={() => void handleSendTask()}
-                  disabled={!canSendTask}
-                >
-                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
-                  {t('remoteInstances.intercom.sendTask')}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
                   onClick={() => void handleSendTask({ screenshot: true })}
                   disabled={!selectedRoute || sending}
                 >
@@ -1000,13 +999,13 @@ export function IntercomControlConsole() {
                   type="button"
                   size="icon"
                   className={`h-9 w-9 shrink-0 rounded-full transition-opacity ${
-                    canSend || sending
+                    canPrimarySend || sending
                       ? 'bg-[#10b981] text-white hover:bg-[#059669]'
                       : 'bg-transparent text-muted-foreground/50 hover:bg-transparent'
                   }`}
                   variant="ghost"
-                  onClick={() => void handleSendMessage()}
-                  disabled={!canSend}
+                  onClick={() => void handlePrimarySend()}
+                  disabled={!canPrimarySend}
                   aria-label={t('remoteInstances.intercom.send')}
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}

@@ -192,6 +192,41 @@ describe('RemoteInstances message flow', () => {
           durationMs: 123,
         };
       }
+      if (path === '/api/files/stage-paths' && init?.method === 'POST') {
+        return [
+          {
+            id: 'file-1',
+            fileName: 'context.md',
+            mimeType: 'text/markdown',
+            fileSize: 123,
+            stagedPath: 'C:/tmp/context.md',
+            preview: null,
+          },
+        ];
+      }
+      if (path === '/api/intercom/transfers/upload' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body));
+        return {
+          success: true,
+          taskId: body.taskId,
+          transfers: [
+            {
+              id: 'upload-1',
+              routeId: 'linux-ktclaw',
+              taskId: body.taskId,
+              direction: 'upload',
+              status: 'success',
+              fileName: 'context.md',
+              localPath: 'C:/tmp/context.md',
+              remotePath: `~/.ktclaw/intercom/inbox/dev/${body.taskId}/context.md`,
+              mimeType: 'text/markdown',
+              size: 123,
+              durationMs: 10,
+              error: null,
+            },
+          ],
+        };
+      }
       if (path === '/api/intercom/tasks' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body));
         return {
@@ -355,15 +390,29 @@ describe('RemoteInstances message flow', () => {
   });
 
   it('sends a structured remote task and renders downloaded artifacts', async () => {
+    invokeIpcMock.mockResolvedValueOnce({
+      canceled: false,
+      filePaths: ['C:/tmp/context.md'],
+    });
     renderPage();
 
     expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send task' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files' }));
+    expect(await screen.findByText('context.md')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Intercom message'), {
       target: { value: 'Inspect the uploaded context' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Send task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => {
+      expect(hostApiFetch).toHaveBeenCalledWith(
+        '/api/intercom/transfers/upload',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"fileName":"context.md"'),
+        }),
+      );
       expect(hostApiFetch).toHaveBeenCalledWith(
         '/api/intercom/tasks',
         expect.objectContaining({
