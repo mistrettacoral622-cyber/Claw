@@ -11,6 +11,12 @@ function isMainProcessExternal(id: string): boolean {
   return true;
 }
 
+const electronMainOutput = {
+  entryFileNames: '[name].js',
+  chunkFileNames: '[name].js',
+  assetFileNames: '[name][extname]',
+};
+
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => {
   const mainProcessExternal =
@@ -45,6 +51,7 @@ export default defineConfig(({ command }) => {
               // Production builds keep the current bundling strategy so packaged
               // artifacts remain self-contained.
               external: mainProcessExternal,
+              output: electronMainOutput,
             },
           },
         },
@@ -59,6 +66,7 @@ export default defineConfig(({ command }) => {
             lib: { entry: 'electron/services/image-search/image-index-worker.ts', formats: ['cjs'], fileName: () => 'image-index-worker.js' },
             rollupOptions: {
               external: mainProcessExternal,
+              output: electronMainOutput,
             },
             emptyOutDir: false,
           },

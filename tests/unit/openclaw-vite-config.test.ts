@@ -17,4 +17,11 @@ describe('vite packaging config', () => {
     expect(viteConfig).toContain("command === 'serve'");
     expect(viteConfig).toContain('external: mainProcessExternal');
   });
+
+  it('uses deterministic Electron main chunk filenames so rebuilt package entries stay require-compatible', () => {
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+
+    expect(viteConfig).toContain("chunkFileNames: '[name].js'");
+    expect(viteConfig).toContain("entryFileNames: '[name].js'");
+  });
 });
