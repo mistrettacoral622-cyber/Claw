@@ -6,6 +6,7 @@ import { useIntercomStore } from '@/stores/intercom';
 import { hostApiFetch } from '@/lib/host-api';
 
 const navigateMock = vi.fn();
+const clipboardWriteTextMock = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
@@ -59,6 +60,7 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.selfHostToShareLabel': 'SSH host/IP for others',
         'remoteInstances.intercom.selfSshUserLabel': 'SSH user on this machine',
         'remoteInstances.intercom.selfRouteExampleLabel': 'Route example',
+        'remoteInstances.intercom.copyConnectionInfo': 'Copy connection info',
         'remoteInstances.intercom.unknownSshUser': 'Fill manually',
         'remoteInstances.intercom.localHostLabel': 'Local host',
         'remoteInstances.intercom.defaultSessionLabel': 'Default session',
@@ -83,6 +85,8 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.toasts.hostAccessEnabled': 'Remote access opened',
         'remoteInstances.intercom.toasts.hostAccessDisabled': 'Remote access closed',
         'remoteInstances.intercom.toasts.hostAccessFailed': 'Remote access failed',
+        'remoteInstances.intercom.toasts.connectionInfoCopied': 'Connection info copied',
+        'remoteInstances.intercom.toasts.connectionInfoCopyFailed': 'Connection info copy failed',
       };
       return table[key] ?? key;
     },
@@ -175,6 +179,11 @@ function renderPanel() {
 describe('SettingsRemoteInstancesPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clipboardWriteTextMock.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteTextMock },
+    });
     resetIntercomStore();
     vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === '/api/intercom/host-readiness') {
@@ -222,6 +231,7 @@ describe('SettingsRemoteInstancesPanel', () => {
     expect(screen.getByText('SSH host/IP for others')).toBeInTheDocument();
     expect(screen.getByText('SSH user on this machine')).toBeInTheDocument();
     expect(screen.getByText('Route example')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy connection info' })).toBeInTheDocument();
     expect(screen.getByText('Configured instances')).toBeInTheDocument();
     expect(screen.getAllByText('windows-dev').length).toBeGreaterThan(0);
     expect(screen.getByText('10.101.208.55')).toBeInTheDocument();
@@ -263,6 +273,19 @@ describe('SettingsRemoteInstancesPanel', () => {
         method: 'POST',
         body: JSON.stringify({ enabled: false }),
       });
+    });
+  });
+
+  it('copies a pasteable connection info bundle from settings', async () => {
+    renderPanel();
+
+    expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy connection info' }));
+
+    await waitFor(() => {
+      expect(clipboardWriteTextMock).toHaveBeenCalledWith(expect.stringContaining('"type": "ktclaw-intercom-route"'));
+      expect(clipboardWriteTextMock).toHaveBeenCalledWith(expect.stringContaining('"host": "10.101.208.55"'));
+      expect(clipboardWriteTextMock).toHaveBeenCalledWith(expect.stringContaining('"agent": "dev"'));
     });
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Loader2,
   MonitorCog,
@@ -19,6 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useIntercomStore, type IntercomRoute } from '@/stores/intercom';
 import { toast } from '@/lib/toast';
+import { INTERCOM_CONNECTION_SHARE_TYPE } from '@/components/remote-instances/intercom-ui-utils';
 
 function routeAddress(route: IntercomRoute): string {
   return route.sshUser ? `${route.sshUser}@${route.host}` : route.host;
@@ -33,6 +35,30 @@ function selfRouteAddress(config: {
   sshUser: string | null;
 }): string {
   return config.sshUser ? `${config.sshUser}@${config.host}` : config.host;
+}
+
+function buildConnectionShareText(config: {
+  host: string;
+  sshUser: string | null;
+  sshPort: number;
+  agentId: string;
+  sessionId: string;
+  remoteCommand: string;
+  routeIdExample: string;
+  displayNameExample: string;
+}): string {
+  return JSON.stringify({
+    type: INTERCOM_CONNECTION_SHARE_TYPE,
+    version: 1,
+    routeId: config.routeIdExample,
+    displayName: config.displayNameExample,
+    host: config.host,
+    sshUser: config.sshUser,
+    sshPort: config.sshPort,
+    agent: config.agentId,
+    sessionId: config.sessionId,
+    remoteCommand: config.remoteCommand || 'openclaw',
+  }, null, 2);
 }
 
 export function SettingsRemoteInstancesPanel() {
@@ -109,6 +135,23 @@ export function SettingsRemoteInstancesPanel() {
       void fetchHostReadiness();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.hostAccessFailed'));
+    }
+  };
+
+  const handleCopyConnectionInfo = async () => {
+    if (!selfConfig) {
+      toast.error(t('remoteInstances.intercom.toasts.connectionInfoCopyFailed'));
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) {
+        toast.error(t('remoteInstances.intercom.toasts.connectionInfoCopyFailed'));
+        return;
+      }
+      await navigator.clipboard.writeText(buildConnectionShareText(selfConfig));
+      toast.success(t('remoteInstances.intercom.toasts.connectionInfoCopied'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.connectionInfoCopyFailed'));
     }
   };
 
@@ -358,9 +401,22 @@ export function SettingsRemoteInstancesPanel() {
                 </div>
               </div>
               <div className="mt-3 rounded-lg border border-black/[0.04] bg-white px-3 py-3 dark:border-white/10 dark:bg-background">
-                <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
-                  {t('remoteInstances.intercom.selfRouteExampleLabel')}
-                </p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
+                    {t('remoteInstances.intercom.selfRouteExampleLabel')}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-2"
+                    onClick={() => void handleCopyConnectionInfo()}
+                    disabled={!selfConfig}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {t('remoteInstances.intercom.copyConnectionInfo')}
+                  </Button>
+                </div>
                 <p className="mt-2 break-all font-mono text-[11px] leading-5 text-[#0f172a] dark:text-foreground">
                   {`ssh ${selfConfig ? selfRouteAddress(selfConfig) : (localHost || 'local')} -p ${selfConfig?.sshPort ?? 22}`}
                 </p>

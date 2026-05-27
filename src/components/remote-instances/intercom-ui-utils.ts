@@ -16,8 +16,25 @@ export type IntercomRouteDraft = {
 };
 
 export const DEFAULT_INTERCOM_SESSION_ID = 'intercom';
-export const DEFAULT_INTERCOM_ROUTE_ID = 'linux-ktclaw';
-export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND = 'openclaw';
+export const DEFAULT_INTERCOM_ROUTE_ID = 'remote-ktclaw';
+export const DEFAULT_REMOTE_KTCLAW_COMMAND = 'openclaw';
+export const DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND = DEFAULT_REMOTE_KTCLAW_COMMAND;
+export const INTERCOM_CONNECTION_SHARE_TYPE = 'ktclaw-intercom-route';
+
+type IntercomConnectionShare = {
+  type?: string;
+  version?: number;
+  id?: string;
+  routeId?: string;
+  displayName?: string;
+  host?: string;
+  sshUser?: string;
+  sshPort?: number | string;
+  agent?: string;
+  agentId?: string;
+  sessionId?: string;
+  remoteCommand?: string;
+};
 
 export function emptyIntercomRouteDraft(): IntercomRouteDraft {
   return {
@@ -71,8 +88,8 @@ export function normalizeIntercomPort(value: string): number | null {
 
 export function buildSshPreview(route: IntercomRouteDraft, message: string, sender: string): string {
   const host = route.sshUser.trim()
-    ? `${route.sshUser.trim()}@${route.host.trim() || '<linux-host>'}`
-    : route.host.trim() || '<linux-host>';
+    ? `${route.sshUser.trim()}@${route.host.trim() || '<remote-host>'}`
+    : route.host.trim() || '<remote-host>';
   const command = route.remoteCommand.trim() || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND;
   const agent = route.agent.trim() || '<agent>';
   const session = route.sessionId.trim() || DEFAULT_INTERCOM_SESSION_ID;
@@ -80,6 +97,55 @@ export function buildSshPreview(route: IntercomRouteDraft, message: string, send
   const from = sender.trim() || '<sender>';
 
   return `ssh ${host} "${command} agent --agent ${agent} --session-id ${session} --message '[from agent ${from}] ${text}' --json"`;
+}
+
+function readShareString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function readSharePort(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return readShareString(value);
+}
+
+export function parseIntercomConnectionShare(text: string): Partial<IntercomRouteDraft> | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let payload: IntercomConnectionShare | null = null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      payload = parsed as IntercomConnectionShare;
+    }
+  } catch {
+    return null;
+  }
+
+  if (!payload || (payload.type && payload.type !== INTERCOM_CONNECTION_SHARE_TYPE)) {
+    return null;
+  }
+
+  const host = readShareString(payload.host);
+  const agent = readShareString(payload.agent) || readShareString(payload.agentId);
+  if (!host || !agent) {
+    return null;
+  }
+
+  return {
+    id: readShareString(payload.routeId) || readShareString(payload.id),
+    displayName: readShareString(payload.displayName),
+    host,
+    sshUser: readShareString(payload.sshUser),
+    sshPort: readSharePort(payload.sshPort) || '22',
+    agent,
+    sessionId: readShareString(payload.sessionId) || DEFAULT_INTERCOM_SESSION_ID,
+    remoteCommand: readShareString(payload.remoteCommand) || DEFAULT_REMOTE_KTCLAW_COMMAND,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

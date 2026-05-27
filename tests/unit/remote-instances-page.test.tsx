@@ -31,7 +31,7 @@ vi.mock('react-i18next', () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const table: Record<string, string> = {
         'remoteInstances.intercom.consoleTitle': 'Remote instance control',
-        'remoteInstances.intercom.consoleDescription': 'Pick a configured Linux KTClaw and send commands.',
+        'remoteInstances.intercom.consoleDescription': 'Pick a configured remote KTClaw and send commands.',
         'remoteInstances.intercom.refresh': 'Refresh',
         'remoteInstances.intercom.installProtocol': 'Install SOP',
         'remoteInstances.intercom.instanceListTitle': 'Instances',
@@ -41,6 +41,9 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.configureTitle': 'Instance configuration',
         'remoteInstances.intercom.configureRoute': 'Configure route',
         'remoteInstances.intercom.configSheetDescription': 'Edit the SSH route used to reach this remote KTClaw instance.',
+        'remoteInstances.intercom.pasteConnectionInfoTitle': 'Connect from copied info',
+        'remoteInstances.intercom.pasteConnectionInfoDescription': 'Paste copied connection info here.',
+        'remoteInstances.intercom.pasteConnectionInfo': 'Paste connection info',
         'remoteInstances.intercom.routeReady': 'Route saved',
         'remoteInstances.intercom.unsavedRoute': 'Unsaved route',
         'remoteInstances.intercom.hostLabel': 'Host',
@@ -80,6 +83,8 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.toasts.taskDelivered': 'Remote task completed',
         'remoteInstances.intercom.toasts.taskFailed': 'Failed to run remote task',
         'remoteInstances.intercom.toasts.artifactDownloadFailed': 'Failed to download remote artifacts',
+        'remoteInstances.intercom.toasts.connectionInfoPasted': 'Connection info pasted',
+        'remoteInstances.intercom.toasts.connectionInfoPasteFailed': 'Invalid connection info',
       };
       return table[key] ?? key;
     },
@@ -130,6 +135,8 @@ function resetIntercomStore() {
     saving: false,
     sending: false,
     installingProtocol: false,
+    preparingHost: false,
+    settingHostAccess: false,
     error: null,
   });
 }
@@ -164,7 +171,7 @@ describe('RemoteInstances page', () => {
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('Instance configuration')).toBeInTheDocument();
-    expect(screen.getByLabelText('Linux host')).toHaveValue('10.101.208.178');
+    expect(screen.getByLabelText('Remote host')).toHaveValue('10.101.208.178');
     expect(screen.getByLabelText('SSH password')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Password saved')).toBeInTheDocument();
     expect(screen.queryByLabelText('SSH port')).not.toBeInTheDocument();
@@ -199,7 +206,7 @@ describe('RemoteInstances page', () => {
     expect(screen.queryByLabelText('Intercom session')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Remote OpenClaw command')).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Linux host'), {
+    fireEvent.change(screen.getByLabelText('Remote host'), {
       target: { value: '10.101.208.178' },
     });
     fireEvent.change(screen.getByLabelText('SSH user'), {
@@ -208,7 +215,7 @@ describe('RemoteInstances page', () => {
     fireEvent.change(screen.getByLabelText('SSH password'), {
       target: { value: 'secret' },
     });
-    fireEvent.change(screen.getByLabelText('Linux agent id'), {
+    fireEvent.change(screen.getByLabelText('Remote agent id'), {
       target: { value: 'main' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save route' }));
@@ -233,5 +240,37 @@ describe('RemoteInstances page', () => {
         }),
       }),
     );
+  });
+
+  it('pastes copied connection info into a new route', async () => {
+    const clipboardReadText = vi.fn(async () => JSON.stringify({
+      type: 'ktclaw-intercom-route',
+      version: 1,
+      routeId: 'windows-dev-main',
+      displayName: 'Windows Dev / main',
+      host: '192.168.0.111',
+      sshUser: '22688',
+      sshPort: 22,
+      agent: 'main',
+      sessionId: 'intercom',
+      remoteCommand: 'openclaw',
+    }));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText: clipboardReadText },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Paste connection info' }));
+
+    expect(await screen.findByDisplayValue('192.168.0.111')).toBeInTheDocument();
+    expect(screen.getByLabelText('Remote host')).toHaveValue('192.168.0.111');
+    expect(screen.getByLabelText('SSH user')).toHaveValue('22688');
+    expect(screen.getByLabelText('Remote agent id')).toHaveValue('main');
   });
 });

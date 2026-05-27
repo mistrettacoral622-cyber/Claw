@@ -4,6 +4,7 @@ import {
   Camera,
   CircleDot,
   ChevronDown,
+  ClipboardPaste,
   FileText,
   Loader2,
   MessageSquareText,
@@ -53,6 +54,7 @@ import {
   emptyIntercomRouteDraft,
   extractIntercomReplyMessages,
   normalizeIntercomPort,
+  parseIntercomConnectionShare,
   type IntercomRouteDraft,
 } from './intercom-ui-utils';
 
@@ -231,7 +233,7 @@ function deriveRouteIdFromDraft(route: IntercomRouteDraft): string {
   if (explicitId) {
     return explicitId;
   }
-  const host = routeIdPart(route.host, 'linux');
+  const host = routeIdPart(route.host, 'remote');
   const agent = routeIdPart(route.agent, 'main');
   return `${host}-${agent}`;
 }
@@ -380,6 +382,31 @@ export function IntercomControlConsole() {
       toast.success(t('remoteInstances.intercom.toasts.routeSaved'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.routeSaveFailed'));
+    }
+  };
+
+  const handlePasteConnectionInfo = async () => {
+    try {
+      if (!navigator.clipboard?.readText) {
+        toast.error(t('remoteInstances.intercom.toasts.connectionInfoPasteFailed'));
+        return;
+      }
+      const text = await navigator.clipboard?.readText?.();
+      const parsed = parseIntercomConnectionShare(text ?? '');
+      if (!parsed) {
+        toast.error(t('remoteInstances.intercom.toasts.connectionInfoPasteFailed'));
+        return;
+      }
+      setRouteDraft((current) => ({
+        ...current,
+        ...parsed,
+        sshPassword: current.sshPassword,
+        clearSshPassword: current.clearSshPassword,
+        sshPasswordConfigured: current.sshPasswordConfigured,
+      }));
+      toast.success(t('remoteInstances.intercom.toasts.connectionInfoPasted'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.connectionInfoPasteFailed'));
     }
   };
 
@@ -1025,13 +1052,36 @@ export function IntercomControlConsole() {
             </SheetDescription>
           </SheetHeader>
 
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div className="mt-5 rounded-lg border border-black/[0.04] bg-[#f8fafc] px-3 py-3 dark:border-white/10 dark:bg-muted/40">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[12px] font-semibold text-[#0f172a] dark:text-foreground">
+                  {t('remoteInstances.intercom.pasteConnectionInfoTitle')}
+                </p>
+                <p className="mt-1 text-[11px] leading-5 text-[#64748b] dark:text-muted-foreground">
+                  {t('remoteInstances.intercom.pasteConnectionInfoDescription')}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => void handlePasteConnectionInfo()}
+              >
+                <ClipboardPaste className="h-4 w-4" />
+                {t('remoteInstances.intercom.pasteConnectionInfo')}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
             <label className="space-y-2 md:col-span-2">
               <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
                 {t('remoteInstances.intercom.hostLabel')}
               </span>
               <Input
-                aria-label="Linux host"
+                aria-label="Remote host"
                 placeholder="10.101.208.178"
                 value={routeDraft.host}
                 onChange={(event) => setRouteDraft((current) => ({ ...current, host: event.target.value }))}
@@ -1097,7 +1147,7 @@ export function IntercomControlConsole() {
                 {t('remoteInstances.intercom.agentIdLabel')}
               </span>
               <Input
-                aria-label="Linux agent id"
+                aria-label="Remote agent id"
                 placeholder="main"
                 value={routeDraft.agent}
                 onChange={(event) => setRouteDraft((current) => ({ ...current, agent: event.target.value }))}
