@@ -50,6 +50,11 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.hostPrepareAdminHint': 'Preparation may open a system administrator prompt.',
         'remoteInstances.intercom.hostPrepareNoAdminHint': 'Preparation can run without administrator changes.',
         'remoteInstances.intercom.prepareHost': 'Prepare this machine',
+        'remoteInstances.intercom.hostAccessToggleLabel': 'Allow remote connections',
+        'remoteInstances.intercom.hostAccessToggleOnDescription': 'SSH access is open.',
+        'remoteInstances.intercom.hostAccessToggleOffDescription': 'SSH access is closed.',
+        'remoteInstances.intercom.hostAccessOn': 'Open',
+        'remoteInstances.intercom.hostAccessOff': 'Closed',
         'remoteInstances.intercom.hostChecksLabel': 'Connection checks',
         'remoteInstances.intercom.selfHostToShareLabel': 'SSH host/IP for others',
         'remoteInstances.intercom.selfSshUserLabel': 'SSH user on this machine',
@@ -75,6 +80,9 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.disabledLabel': 'Disabled',
         'remoteInstances.intercom.toasts.hostPrepared': 'Host prepared',
         'remoteInstances.intercom.toasts.hostPrepareFailed': 'Host prepare failed',
+        'remoteInstances.intercom.toasts.hostAccessEnabled': 'Remote access opened',
+        'remoteInstances.intercom.toasts.hostAccessDisabled': 'Remote access closed',
+        'remoteInstances.intercom.toasts.hostAccessFailed': 'Remote access failed',
       };
       return table[key] ?? key;
     },
@@ -117,6 +125,7 @@ const READY_INTERCOM_RESPONSE = {
 const READY_HOST_RESPONSE = {
   success: true,
   ready: true,
+  accessEnabled: true,
   platform: 'win32',
   canPrepare: true,
   needsAdmin: true,
@@ -149,6 +158,7 @@ function resetIntercomStore() {
     sending: false,
     installingProtocol: false,
     preparingHost: false,
+    settingHostAccess: false,
     error: null,
     hostReadiness: null,
   });
@@ -180,6 +190,20 @@ describe('SettingsRemoteInstancesPanel', () => {
           status: READY_HOST_RESPONSE,
         };
       }
+      if (path === '/api/intercom/host-access' && init?.method === 'POST') {
+        return {
+          success: true,
+          started: true,
+          stdout: '',
+          stderr: '',
+          error: null,
+          status: {
+            ...READY_HOST_RESPONSE,
+            ready: false,
+            accessEnabled: false,
+          },
+        };
+      }
       return READY_INTERCOM_RESPONSE;
     });
   });
@@ -191,6 +215,8 @@ describe('SettingsRemoteInstancesPanel', () => {
     expect(screen.getByText('This KTClaw')).toBeInTheDocument();
     expect(await screen.findByText('Ready')).toBeInTheDocument();
     expect(screen.getByText('Connection checks')).toBeInTheDocument();
+    expect(screen.getByText('Allow remote connections')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Allow remote connections' })).toBeChecked();
     expect(screen.getByText('SSH listener')).toBeInTheDocument();
     expect(screen.getByText('Config others should enter')).toBeInTheDocument();
     expect(screen.getByText('SSH host/IP for others')).toBeInTheDocument();
@@ -222,6 +248,20 @@ describe('SettingsRemoteInstancesPanel', () => {
     await waitFor(() => {
       expect(hostApiFetch).toHaveBeenCalledWith('/api/intercom/prepare-host', {
         method: 'POST',
+      });
+    });
+  });
+
+  it('can close host remote access from settings', async () => {
+    renderPanel();
+
+    expect(await screen.findByText('Remote instance management')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('switch', { name: 'Allow remote connections' }));
+
+    await waitFor(() => {
+      expect(hostApiFetch).toHaveBeenCalledWith('/api/intercom/host-access', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: false }),
       });
     });
   });

@@ -13,6 +13,7 @@ const downloadIntercomArtifactsMock = vi.fn();
 const installIntercomProtocolMock = vi.fn();
 const getIntercomHostReadinessMock = vi.fn();
 const prepareIntercomHostMock = vi.fn();
+const setIntercomHostAccessMock = vi.fn();
 
 vi.mock('@electron/api/route-utils', () => ({
   parseJsonBody: (...args: unknown[]) => parseJsonBodyMock(...args),
@@ -30,6 +31,7 @@ vi.mock('@electron/services/intercom', () => ({
   downloadIntercomArtifacts: (...args: unknown[]) => downloadIntercomArtifactsMock(...args),
   installIntercomProtocol: (...args: unknown[]) => installIntercomProtocolMock(...args),
   prepareIntercomHost: (...args: unknown[]) => prepareIntercomHostMock(...args),
+  setIntercomHostAccess: (...args: unknown[]) => setIntercomHostAccessMock(...args),
 }));
 
 describe('intercom routes', () => {
@@ -118,6 +120,27 @@ describe('intercom routes', () => {
       success: true,
       started: true,
       status: { ready: true },
+    });
+  });
+
+  it('toggles host remote access', async () => {
+    parseJsonBodyMock.mockResolvedValue({ enabled: false });
+    setIntercomHostAccessMock.mockResolvedValue({ success: true, started: true, status: { ready: false } });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/host-access'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(setIntercomHostAccessMock).toHaveBeenCalledWith(false);
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      started: true,
+      status: { ready: false },
     });
   });
 

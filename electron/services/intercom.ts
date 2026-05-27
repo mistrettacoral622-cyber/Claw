@@ -60,6 +60,7 @@ export interface IntercomHostReadinessCheck {
 
 export interface IntercomHostReadiness {
   ready: boolean;
+  accessEnabled: boolean;
   platform: NodeJS.Platform;
   canPrepare: boolean;
   needsAdmin: boolean;
@@ -654,13 +655,33 @@ function buildWindowsPrepareScript(): string {
   ].join('; ');
 }
 
+function buildWindowsDisableScript(): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$service = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue",
+    "if ($service) { Stop-Service -Name 'sshd' -Force -ErrorAction SilentlyContinue; Set-Service -Name 'sshd' -StartupType Manual }",
+    "$rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue",
+    "if ($rule) { Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' }",
+  ].join('; ');
+}
+
 function buildLinuxPrepareScript(): string {
   return [
     'set -e',
-    "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y openssh-server; elif command -v dnf >/dev/null 2>&1; then dnf install -y openssh-server; elif command -v yum >/dev/null 2>&1; then yum install -y openssh-server; elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm openssh; else echo 'No supported package manager found for automatic OpenSSH installation.' >&2; exit 2; fi",
-    "if command -v systemctl >/dev/null 2>&1; then systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd; fi",
+    "if command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ]; then :; elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y openssh-server; elif command -v dnf >/dev/null 2>&1; then dnf install -y openssh-server; elif command -v yum >/dev/null 2>&1; then yum install -y openssh-server; elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm openssh; elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive install openssh; elif command -v apk >/dev/null 2>&1; then apk add openssh; else echo 'No supported package manager found for automatic OpenSSH installation.' >&2; exit 2; fi",
+    "if command -v systemctl >/dev/null 2>&1; then systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd; elif command -v service >/dev/null 2>&1; then service ssh start 2>/dev/null || service sshd start; else /usr/sbin/sshd 2>/dev/null || sshd; fi",
     "if command -v ufw >/dev/null 2>&1; then ufw allow 22/tcp || true; fi",
     "if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --add-service=ssh --permanent || true; firewall-cmd --reload || true; fi",
+  ].join('; ');
+}
+
+function buildLinuxDisableScript(): string {
+  return [
+    'set -e',
+    "if command -v systemctl >/dev/null 2>&1; then systemctl disable --now ssh 2>/dev/null || systemctl disable --now sshd 2>/dev/null || true; fi",
+    "if command -v service >/dev/null 2>&1; then service ssh stop 2>/dev/null || service sshd stop 2>/dev/null || true; fi",
+    "if command -v ufw >/dev/null 2>&1; then ufw --force delete allow 22/tcp 2>/dev/null || ufw --force delete allow ssh 2>/dev/null || true; fi",
+    "if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --remove-service=ssh --permanent 2>/dev/null || true; firewall-cmd --reload 2>/dev/null || true; fi",
   ].join('; ');
 }
 
@@ -668,22 +689,37 @@ function buildMacPrepareScript(): string {
   return 'systemsetup -setremotelogin on';
 }
 
-function buildPrepareCommandPreview(platform: NodeJS.Platform): string | null {
+function buildMacDisableScript(): string {
+  return 'systemsetup -setremotelogin off';
+}
+
+function buildHostAccessScript(platform: NodeJS.Platform, enabled: boolean): string | null {
   if (platform === 'win32') {
-    return buildWindowsPrepareScript();
+    return enabled ? buildWindowsPrepareScript() : buildWindowsDisableScript();
   }
   if (platform === 'linux') {
-    return buildLinuxPrepareScript();
+    return enabled ? buildLinuxPrepareScript() : buildLinuxDisableScript();
   }
   if (platform === 'darwin') {
-    return buildMacPrepareScript();
+    return enabled ? buildMacPrepareScript() : buildMacDisableScript();
   }
   return null;
 }
 
-async function buildPrepareInvocation(platform: NodeJS.Platform): Promise<{ command: string; args: string[] } | null> {
+function buildPrepareCommandPreview(platform: NodeJS.Platform): string | null {
+  return buildHostAccessScript(platform, true);
+}
+
+async function buildHostAccessInvocation(
+  platform: NodeJS.Platform,
+  enabled: boolean,
+): Promise<{ command: string; args: string[] } | null> {
+  const script = buildHostAccessScript(platform, enabled);
+  if (!script) {
+    return null;
+  }
   if (platform === 'win32') {
-    const encoded = encodePowerShellCommand(buildWindowsPrepareScript());
+    const encoded = encodePowerShellCommand(script);
     const launcher = `Start-Process -FilePath powershell.exe -Verb RunAs -Wait -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}')`;
     return {
       command: getWindowsPowerShellPath(),
@@ -694,21 +730,25 @@ async function buildPrepareInvocation(platform: NodeJS.Platform): Promise<{ comm
     if (await commandExists('pkexec')) {
       return {
         command: 'pkexec',
-        args: ['sh', '-lc', buildLinuxPrepareScript()],
+        args: ['sh', '-lc', script],
       };
     }
     return {
       command: 'sudo',
-      args: ['-n', 'sh', '-lc', buildLinuxPrepareScript()],
+      args: ['-n', 'sh', '-lc', script],
     };
   }
   if (platform === 'darwin') {
     return {
       command: 'osascript',
-      args: ['-e', `do shell script ${JSON.stringify(buildMacPrepareScript())} with administrator privileges`],
+      args: ['-e', `do shell script ${JSON.stringify(script)} with administrator privileges`],
     };
   }
   return null;
+}
+
+async function buildPrepareInvocation(platform: NodeJS.Platform): Promise<{ command: string; args: string[] } | null> {
+  return buildHostAccessInvocation(platform, true);
 }
 
 function createReadinessCheck(
@@ -2209,6 +2249,7 @@ export async function getIntercomHostReadiness(): Promise<IntercomHostReadiness>
   const blockingChecks = checks.filter((check) => check.status === 'missing');
   return {
     ready: blockingChecks.length === 0,
+    accessEnabled: sshListening,
     platform,
     canPrepare,
     needsAdmin: canPrepare,
@@ -2224,7 +2265,7 @@ export async function getIntercomHostReadiness(): Promise<IntercomHostReadiness>
 }
 
 export async function prepareIntercomHost(): Promise<IntercomHostPrepareResult> {
-  const invocation = await buildPrepareInvocation(process.platform);
+  const invocation = await buildHostAccessInvocation(process.platform, true);
   if (!invocation) {
     const status = await getIntercomHostReadiness();
     return {
@@ -2233,6 +2274,32 @@ export async function prepareIntercomHost(): Promise<IntercomHostPrepareResult> 
       stdout: '',
       stderr: '',
       error: `Automatic host preparation is not supported on ${process.platform}.`,
+      status,
+    };
+  }
+
+  const result = await runPrepareInvocation(invocation);
+  return {
+    ...result,
+    started: true,
+    status: await getIntercomHostReadiness(),
+  };
+}
+
+export async function setIntercomHostAccess(enabled: boolean): Promise<IntercomHostPrepareResult> {
+  if (enabled) {
+    return prepareIntercomHost();
+  }
+
+  const invocation = await buildHostAccessInvocation(process.platform, false);
+  if (!invocation) {
+    const status = await getIntercomHostReadiness();
+    return {
+      success: false,
+      started: false,
+      stdout: '',
+      stderr: '',
+      error: `Automatic host access changes are not supported on ${process.platform}.`,
       status,
     };
   }

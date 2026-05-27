@@ -285,12 +285,41 @@ describe('intercom service', () => {
       agentId: 'main',
       sessionId: 'intercom',
       canPrepare: expect.any(Boolean),
+      accessEnabled: expect.any(Boolean),
     }));
     expect(readiness.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'lan-host', status: 'ok' }),
       expect.objectContaining({ id: 'ssh-user', status: 'ok' }),
       expect.objectContaining({ id: 'agent', status: 'ok' }),
     ]));
+  });
+
+  it('can close this host for remote SSH intercom access', async () => {
+    const { setIntercomHostAccess } = await import('@electron/services/intercom');
+
+    const result = await setIntercomHostAccess(false);
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      started: true,
+      status: expect.objectContaining({
+        accessEnabled: expect.any(Boolean),
+      }),
+    }));
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const [command, args] = spawnMock.mock.calls[0] as [string, string[]];
+    const serialized = `${command} ${args.join(' ')}`;
+    if (process.platform === 'win32') {
+      const match = serialized.match(/-EncodedCommand','([^']+)'/);
+      expect(match?.[1]).toBeTruthy();
+      const decoded = Buffer.from(match?.[1] ?? '', 'base64').toString('utf16le');
+      expect(decoded).toContain("Stop-Service -Name 'sshd'");
+      expect(decoded).toContain("Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'");
+    } else if (process.platform === 'darwin') {
+      expect(serialized).toContain('systemsetup -setremotelogin off');
+    } else {
+      expect(serialized).toContain('disable --now ssh');
+    }
   });
 
   it('persists an SSH route under KTClaw intercom config without touching OpenClaw root schema', async () => {

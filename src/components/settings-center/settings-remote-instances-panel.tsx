@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { SettingsSectionCard } from '@/components/settings-center/settings-section-card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { useIntercomStore, type IntercomRoute } from '@/stores/intercom';
 import { toast } from '@/lib/toast';
 
@@ -46,15 +47,18 @@ export function SettingsRemoteInstancesPanel() {
   const loading = useIntercomStore((state) => state.loading);
   const installingProtocol = useIntercomStore((state) => state.installingProtocol);
   const preparingHost = useIntercomStore((state) => state.preparingHost);
+  const settingHostAccess = useIntercomStore((state) => state.settingHostAccess);
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
   const fetchHostReadiness = useIntercomStore((state) => state.fetchHostReadiness);
   const installProtocol = useIntercomStore((state) => state.installProtocol);
   const prepareHost = useIntercomStore((state) => state.prepareHost);
+  const setHostAccess = useIntercomStore((state) => state.setHostAccess);
 
   const sshRoutes = useMemo(
     () => routes.filter((route) => route.transport === 'ssh'),
     [routes],
   );
+  const hostAccessEnabled = hostReadiness?.accessEnabled === true;
 
   useEffect(() => {
     void fetchIntercom();
@@ -88,6 +92,23 @@ export function SettingsRemoteInstancesPanel() {
       void fetchHostReadiness();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.hostPrepareFailed'));
+    }
+  };
+
+  const handleSetHostAccess = async (enabled: boolean) => {
+    try {
+      const result = await setHostAccess(enabled);
+      if (result.success) {
+        toast.success(t(enabled
+          ? 'remoteInstances.intercom.toasts.hostAccessEnabled'
+          : 'remoteInstances.intercom.toasts.hostAccessDisabled'));
+      } else {
+        toast.error(result.error || t('remoteInstances.intercom.toasts.hostAccessFailed'));
+      }
+      void fetchIntercom({ force: true });
+      void fetchHostReadiness();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.hostAccessFailed'));
     }
   };
 
@@ -153,10 +174,12 @@ export function SettingsRemoteInstancesPanel() {
                     {t('remoteInstances.intercom.selfTitle')}
                   </h4>
                 </div>
-                <Badge variant={hostReadiness?.ready ? 'success' : 'warning'}>
-                  {hostReadiness?.ready
-                    ? t('remoteInstances.intercom.hostReady')
-                    : t('remoteInstances.intercom.hostNeedsSetup')}
+                <Badge variant={hostReadiness?.ready ? 'success' : hostAccessEnabled ? 'warning' : 'secondary'}>
+                  {!hostAccessEnabled
+                    ? t('remoteInstances.intercom.hostAccessOff')
+                    : hostReadiness?.ready
+                      ? t('remoteInstances.intercom.hostReady')
+                      : t('remoteInstances.intercom.hostNeedsSetup')}
                 </Badge>
               </div>
               <div className="mt-4 space-y-3">
@@ -191,6 +214,32 @@ export function SettingsRemoteInstancesPanel() {
                     {preparingHost ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
                     {t('remoteInstances.intercom.prepareHost')}
                   </Button>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-black/[0.04] bg-[#f8fafc] px-3 py-2 dark:border-white/10 dark:bg-muted/40">
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-semibold text-[#0f172a] dark:text-foreground">
+                        {t('remoteInstances.intercom.hostAccessToggleLabel')}
+                      </p>
+                      <p className="mt-1 text-[11px] leading-5 text-[#64748b] dark:text-muted-foreground">
+                        {hostAccessEnabled
+                          ? t('remoteInstances.intercom.hostAccessToggleOnDescription')
+                          : t('remoteInstances.intercom.hostAccessToggleOffDescription')}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {settingHostAccess ? <Loader2 className="h-4 w-4 animate-spin text-[#64748b]" /> : null}
+                      <Badge variant={hostAccessEnabled ? 'success' : 'secondary'}>
+                        {hostAccessEnabled
+                          ? t('remoteInstances.intercom.hostAccessOn')
+                          : t('remoteInstances.intercom.hostAccessOff')}
+                      </Badge>
+                      <Switch
+                        checked={hostAccessEnabled}
+                        onCheckedChange={(checked) => void handleSetHostAccess(checked)}
+                        disabled={settingHostAccess || preparingHost || hostReadiness?.canPrepare === false}
+                        aria-label={t('remoteInstances.intercom.hostAccessToggleLabel')}
+                      />
+                    </div>
+                  </div>
                 </div>
                 {hostReadiness?.checks && hostReadiness.checks.length > 0 ? (
                   <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">

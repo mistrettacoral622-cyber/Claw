@@ -605,6 +605,11 @@
       "hostPrepareAdminHint": "Preparation may open a system administrator prompt to install/start SSH and allow the firewall rule.",
       "hostPrepareNoAdminHint": "Preparation can run without administrator changes on this platform.",
       "prepareHost": "Prepare this machine",
+      "hostAccessToggleLabel": "Allow remote connections",
+      "hostAccessToggleOnDescription": "SSH access is open for other configured KTClaw instances.",
+      "hostAccessToggleOffDescription": "SSH access is closed; other machines cannot connect until you reopen it.",
+      "hostAccessOn": "Open",
+      "hostAccessOff": "Closed",
       "hostChecksLabel": "Connection checks",
       "selfHostToShareLabel": "SSH host/IP for others",
       "selfSshUserLabel": "SSH user on this machine",
@@ -679,6 +684,9 @@
         "artifactDownloadFailed": "Failed to download remote artifacts",
         "hostPrepared": "This machine is ready for intercom connections",
         "hostPrepareFailed": "Failed to prepare this machine for intercom",
+        "hostAccessEnabled": "Remote access is open",
+        "hostAccessDisabled": "Remote access is closed",
+        "hostAccessFailed": "Failed to change remote access",
         "protocolInstalled": "Intercom SOP updated: {{updated}}, skipped: {{skipped}}",
         "protocolFailed": "Failed to install intercom SOP"
       }

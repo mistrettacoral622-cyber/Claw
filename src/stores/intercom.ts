@@ -41,6 +41,7 @@ export type IntercomHostReadinessCheck = {
 
 export type IntercomHostReadiness = {
   ready: boolean;
+  accessEnabled: boolean;
   platform: string;
   canPrepare: boolean;
   needsAdmin: boolean;
@@ -193,6 +194,7 @@ type IntercomState = {
   sending: boolean;
   installingProtocol: boolean;
   preparingHost: boolean;
+  settingHostAccess: boolean;
   error: string | null;
   lastSendResult: IntercomSendResult | null;
   lastTaskResult: IntercomTaskSendResult | null;
@@ -201,6 +203,7 @@ type IntercomState = {
   fetchIntercom: (options?: { force?: boolean }) => Promise<void>;
   fetchHostReadiness: () => Promise<void>;
   prepareHost: () => Promise<IntercomHostPrepareResult>;
+  setHostAccess: (enabled: boolean) => Promise<IntercomHostPrepareResult>;
   upsertRoute: (input: IntercomRouteInput) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   sendMessage: (input: IntercomSendInput) => Promise<IntercomSendResult>;
@@ -325,6 +328,7 @@ function normalizeHostReadiness(value: unknown): IntercomHostReadiness | null {
   }
   return {
     ready: value.ready === true,
+    accessEnabled: value.accessEnabled === true,
     platform: readString(value.platform) ?? 'unknown',
     canPrepare: value.canPrepare === true,
     needsAdmin: value.needsAdmin === true,
@@ -379,6 +383,7 @@ function normalizeHostPrepareResult(value: unknown): IntercomHostPrepareResult {
     error: readString(row.error),
     status: normalizeHostReadiness(row.status) ?? normalizeHostReadiness(row) ?? {
       ready: false,
+      accessEnabled: false,
       platform: 'unknown',
       canPrepare: false,
       needsAdmin: false,
@@ -566,6 +571,7 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
   sending: false,
   installingProtocol: false,
   preparingHost: false,
+  settingHostAccess: false,
   error: null,
   lastSendResult: null,
   lastTaskResult: null,
@@ -608,6 +614,22 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
       return result;
     } catch (error) {
       set({ preparingHost: false, error: toErrorMessage(error) });
+      throw error;
+    }
+  },
+
+  setHostAccess: async (enabled) => {
+    set({ settingHostAccess: true, error: null });
+    try {
+      const response = await hostApiFetch('/api/intercom/host-access', {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      });
+      const result = normalizeHostPrepareResult(response);
+      set({ settingHostAccess: false, hostReadiness: result.status });
+      return result;
+    } catch (error) {
+      set({ settingHostAccess: false, error: toErrorMessage(error) });
       throw error;
     }
   },

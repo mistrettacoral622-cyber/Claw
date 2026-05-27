@@ -571,6 +571,11 @@
       "hostPrepareAdminHint": "准备过程可能会弹出系统管理员授权，用于安装/启动 SSH 并放行防火墙。",
       "hostPrepareNoAdminHint": "当前平台上的准备动作不需要管理员修改。",
       "prepareHost": "准备这台机器",
+      "hostAccessToggleLabel": "允许远程连接",
+      "hostAccessToggleOnDescription": "SSH 权限已开放，已配置的其他 KTClaw 可以连接本机。",
+      "hostAccessToggleOffDescription": "SSH 权限已关闭，其他机器暂时不能连接本机。",
+      "hostAccessOn": "已开放",
+      "hostAccessOff": "已关闭",
       "hostChecksLabel": "连接检查",
       "selfHostToShareLabel": "给别人填写的 SSH Host/IP",
       "selfSshUserLabel": "本机 SSH 用户",
@@ -645,6 +650,9 @@
         "artifactDownloadFailed": "下载远端 artifact 失败",
         "hostPrepared": "这台机器已准备好接收 Intercom 连接",
         "hostPrepareFailed": "准备这台机器接收 Intercom 连接失败",
+        "hostAccessEnabled": "远程连接权限已开放",
+        "hostAccessDisabled": "远程连接权限已关闭",
+        "hostAccessFailed": "切换远程连接权限失败",
         "protocolInstalled": "Intercom SOP 已更新：{{updated}}，跳过：{{skipped}}",
         "protocolFailed": "注入 Intercom SOP 失败"
       }

@@ -10,6 +10,7 @@ import {
   prepareIntercomHost,
   sendIntercomMessage,
   sendIntercomTask,
+  setIntercomHostAccess,
   upsertIntercomRoute,
   uploadIntercomFiles,
   type IntercomDownloadArtifactsInput,
@@ -54,6 +55,12 @@ function assertArray(value: unknown, field: string): void {
   }
 }
 
+function assertBoolean(value: unknown, field: string): asserts value is boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${field} is required`);
+  }
+}
+
 export async function handleIntercomRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -83,6 +90,17 @@ export async function handleIntercomRoutes(
       sendJson(res, 200, await prepareIntercomHost());
     } catch (error) {
       sendJson(res, 500, { success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/host-access' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<{ enabled?: unknown }>(req);
+      assertBoolean(body.enabled, 'enabled');
+      sendJson(res, 200, await setIntercomHostAccess(body.enabled));
+    } catch (error) {
+      sendJson(res, 400, { success: false, error: error instanceof Error ? error.message : String(error) });
     }
     return true;
   }
