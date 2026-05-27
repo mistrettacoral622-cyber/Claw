@@ -742,6 +742,8 @@ describe('intercom service', () => {
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('remote_task');
     expect(sshArgs.at(-1)).toContain('"action": "inspect_file"');
+    expect(sshArgs.at(-1)).toContain("'--session-id' 'intercom-task-task-1'");
+    expect(result.sessionId).toBe('intercom-task-task-1');
   });
 
   it('falls back to assistant text when a remote task returns ordinary OpenClaw messages', async () => {

@@ -1473,6 +1473,11 @@ function buildCleanIntercomSessionId(sessionId: string): string {
   return `${base}-text-${randomUUID().slice(0, 8)}`;
 }
 
+function buildTaskIntercomSessionId(sessionId: string, taskId: string): string {
+  const base = safeRemotePathPart(normalizeString(sessionId) || DEFAULT_SESSION_ID, DEFAULT_SESSION_ID);
+  return `${base}-task-${safeRemotePathPart(taskId, 'task')}`;
+}
+
 async function resolveIntercomTarget(target: string): Promise<{
   snapshot: IntercomSnapshot;
   target: string;
@@ -2236,7 +2241,8 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
   }
 
   const task = buildIntercomRemoteTaskRequest(input);
-  const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
+  const baseSessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
+  const sessionId = buildTaskIntercomSessionId(baseSessionId, task.taskId);
   const finalMessage = buildIntercomRemoteTaskMessage(sender, task);
   const { invocation, commandResult, sessionId: actualSessionId } = await runIntercomRouteMessage({
     route,
