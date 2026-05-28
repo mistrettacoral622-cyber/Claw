@@ -82,8 +82,8 @@ jobs:
           NODE_OPTIONS: --max_old_space_size=6144
         run: |
           pnpm run package:prepare
-          npx electron-builder --win --x64 --publish never
-          npx electron-builder --win --arm64 --publish never
+          pnpm exec electron-builder --win --x64 --publish never
+          pnpm exec electron-builder --win --arm64 --publish never
 
       - name: Startup smoke (Windows)
         run: pnpm run smoke:startup:packaged -- --platform=win

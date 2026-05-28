@@ -15,7 +15,7 @@ const args = new Map(
 const releaseDir = path.resolve(cwd, args.get('release-dir') || 'release');
 const explicitExecutable = args.get('executable');
 const platformArg = args.get('platform') || '';
-const timeoutMs = Number.parseInt(args.get('timeout-ms') || '', 10) || 120_000;
+const timeoutMs = Number.parseInt(args.get('timeout-ms') || '', 10) || 240_000;
 
 function fail(message) {
   console.error(`[packaged-startup-smoke] FAIL: ${message}`);

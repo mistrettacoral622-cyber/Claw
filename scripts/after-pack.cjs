@@ -198,6 +198,71 @@ function cleanupNativePlatformPackages(nodeModulesDir, platform, arch) {
   return removed;
 }
 
+function cleanupOnnxRuntimeNodeBinaries(nodeModulesDir, platform, arch) {
+  let removed = 0;
+  const visited = new Set();
+
+  function cleanupBinaryRoot(napiRoot) {
+    let platformEntries;
+    try { platformEntries = readdirSync(normWin(napiRoot), { withFileTypes: true }); } catch { return; }
+
+    for (const platformEntry of platformEntries) {
+      if (!platformEntry.isDirectory()) continue;
+      const platformDir = join(napiRoot, platformEntry.name);
+
+      if (platformEntry.name !== platform) {
+        try {
+          rmSync(normWin(platformDir), { recursive: true, force: true });
+          removed++;
+        } catch { /* ignore */ }
+        continue;
+      }
+
+      let archEntries;
+      try { archEntries = readdirSync(normWin(platformDir), { withFileTypes: true }); } catch { continue; }
+      for (const archEntry of archEntries) {
+        if (!archEntry.isDirectory()) continue;
+        if (archEntry.name === arch) continue;
+        try {
+          rmSync(normWin(join(platformDir, archEntry.name)), { recursive: true, force: true });
+          removed++;
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  function walk(currentDir) {
+    let realCurrent;
+    try { realCurrent = realpathSync(normWin(currentDir)); } catch { realCurrent = currentDir; }
+    if (visited.has(realCurrent)) return;
+    visited.add(realCurrent);
+
+    let entries;
+    try { entries = readdirSync(normWin(currentDir), { withFileTypes: true }); } catch { return; }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const fullPath = join(currentDir, entry.name);
+      if (entry.name === 'onnxruntime-node') {
+        cleanupBinaryRoot(join(fullPath, 'bin', 'napi-v3'));
+        continue;
+      }
+      walk(fullPath);
+    }
+  }
+
+  walk(nodeModulesDir);
+  return removed;
+}
+
+function cleanupRuntimeNodeModules(nodeModulesDir, platform, arch) {
+  return {
+    unnecessaryRemoved: cleanupUnnecessaryFiles(nodeModulesDir),
+    onnxRuntimeRemoved: cleanupOnnxRuntimeNodeBinaries(nodeModulesDir, platform, arch),
+    nativeRemoved: cleanupNativePlatformPackages(nodeModulesDir, platform, arch),
+  };
+}
+
 // ── Platform-specific: @node-llama-cpp ───────────────────────────────────────
 // Uses up to ~700MB per platform, shipping all prebuilds for win, mac, linux.
 function cleanupNodeLlamaCpp(nodeModulesDir, platform, arch) {
@@ -359,6 +424,12 @@ function applyNestedDependencyRepairs(nodeModulesDir, sourceNodeModulesDir) {
 
   return count;
 }
+
+exports.__test = {
+  cleanupOnnxRuntimeNodeBinaries,
+  cleanupRuntimeNodeModules,
+  cleanupUnnecessaryFiles,
+};
 
 // ── Plugin bundler ───────────────────────────────────────────────────────────
 // Bundles a single OpenClaw plugin (and its transitive deps) from node_modules
@@ -545,7 +616,16 @@ exports.default = async function afterPack(context) {
     console.log(`[after-pack] Bundling runtime dependency ${npmName} -> ${runtimeDestDir}`);
     bundlePlugin(nodeModulesRoot, npmName, runtimeDestDir);
   }
-  cleanupNativePlatformPackages(runtimeNodeModulesRoot, platform, arch);
+  const runtimeCleanup = cleanupRuntimeNodeModules(runtimeNodeModulesRoot, platform, arch);
+  if (runtimeCleanup.unnecessaryRemoved > 0) {
+    console.log(`[after-pack] ✅ runtime node_modules: removed ${runtimeCleanup.unnecessaryRemoved} unnecessary files/directories.`);
+  }
+  if (runtimeCleanup.onnxRuntimeRemoved > 0) {
+    console.log(`[after-pack] ✅ onnxruntime-node: removed ${runtimeCleanup.onnxRuntimeRemoved} non-target binary directories.`);
+  }
+  if (runtimeCleanup.nativeRemoved > 0) {
+    console.log(`[after-pack] ✅ runtime node_modules: removed ${runtimeCleanup.nativeRemoved} non-target native package(s).`);
+  }
 
   // 1.1 Bundle OpenClaw plugins directly from node_modules into packaged resources.
   //     This is intentionally done in afterPack (not extraResources) because:

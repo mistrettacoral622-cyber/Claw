@@ -74,6 +74,7 @@ describe('E2E / release smoke guardrails', () => {
     const mainProcess = readFileSync(resolve(process.cwd(), 'electron/main/index.ts'), 'utf8');
 
     expect(startupSmoke).toContain('KTCLAW_STARTUP_SMOKE_WAIT_FOR_GATEWAY');
+    expect(startupSmoke).toContain('240_000');
     expect(startupSmoke).toContain('OPENCLAW_DISABLE_BONJOUR');
     expect(mainProcess).toContain('STARTUP_SMOKE_WAIT_FOR_GATEWAY');
     expect(mainProcess).toContain('startupSmokeRendererLoaded');
@@ -119,7 +120,7 @@ describe('E2E / release smoke guardrails', () => {
     expect(releaseWorkflow).toContain('pnpm run smoke:install:linux');
 
     expect(packageWinManualWorkflow).toContain('pnpm run package:prepare');
-    expect(packageWinManualWorkflow).toContain('npx electron-builder --win --x64 --publish never');
-    expect(packageWinManualWorkflow).toContain('npx electron-builder --win --arm64 --publish never');
+    expect(packageWinManualWorkflow).toContain('pnpm exec electron-builder --win --x64 --publish never');
+    expect(packageWinManualWorkflow).toContain('pnpm exec electron-builder --win --arm64 --publish never');
   });
 });
