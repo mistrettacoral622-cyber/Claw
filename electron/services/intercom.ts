@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, posix as pathPosix } from 'node:path';
 import { Socket } from 'node:net';
-import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2';
+import type { Client as Ssh2Client, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { listAgentsSnapshot } from '../utils/agent-config';
 import { readOpenClawConfig, writeOpenClawConfig, type OpenClawConfig } from '../utils/channel-config';
 import { withConfigLock } from '../utils/config-mutex';
@@ -1738,7 +1738,19 @@ function buildSshCommand(
   };
 }
 
-function runSsh2Command(
+async function createSsh2Client(): Promise<Ssh2Client> {
+  try {
+    const ssh2 = await import('ssh2');
+    return new ssh2.Client();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`KTClaw SSH runtime dependency is unavailable. Reinstall or rebuild KTClaw with ssh2 bundled. Original error: ${message}`, {
+      cause: error,
+    });
+  }
+}
+
+async function runSsh2Command(
   route: IntercomRoute,
   password: string,
   message: string,
@@ -1746,6 +1758,7 @@ function runSsh2Command(
   options: { windowsAuto?: boolean } = {},
 ) {
   const startedAt = Date.now();
+  const client = await createSsh2Client();
   const resolved = resolveSshHostAndUsername(route);
   const username = resolved.username || userInfo().username;
   const remoteCommand = options.windowsAuto
@@ -1762,7 +1775,6 @@ function runSsh2Command(
   };
 
   return new Promise<{ exitCode: number | null; stdout: string; stderr: string; durationMs: number }>((resolve, reject) => {
-    const client = new Client();
     let completed = false;
     let stdout = '';
     let stderr = '';
@@ -1879,8 +1891,8 @@ async function withIntercomSftp<T>(
     throw new Error('SFTP requires a saved SSH password for this route');
   }
 
+  const client = await createSsh2Client();
   return new Promise<T>((resolve, reject) => {
-    const client = new Client();
     let settled = false;
     const finish = (fn: () => void) => {
       if (settled) {

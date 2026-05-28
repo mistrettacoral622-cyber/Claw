@@ -36,9 +36,21 @@ describe('E2E / release smoke guardrails', () => {
     expect(scripts['smoke:linux']).toContain('package:linux:smoke');
   });
 
-  it('keeps transformers externalized from the packaged Electron main bundle path', () => {
+  it('bundles externalized Electron main runtime dependencies for packaged apps', () => {
     const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+    const afterPack = readFileSync(resolve(process.cwd(), 'scripts/after-pack.cjs'), 'utf8');
+
     expect(viteConfig).toContain("'@xenova/transformers'");
+    expect(viteConfig).toContain("'ssh2'");
+    expect(afterPack).toContain("'@xenova/transformers'");
+    expect(afterPack).toContain("'ssh2'");
+  });
+
+  it('lazy-loads ssh2 so host preparation can run without SSH client module loading', () => {
+    const intercomService = readFileSync(resolve(process.cwd(), 'electron/services/intercom.ts'), 'utf8');
+
+    expect(intercomService).not.toMatch(/import\s+\{\s*Client[\s\S]*from ['"]ssh2['"]/);
+    expect(intercomService).toContain("await import('ssh2')");
   });
 
   it('includes packaged startup and Linux release/install smoke scripts', () => {

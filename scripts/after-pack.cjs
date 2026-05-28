@@ -604,6 +604,7 @@ exports.default = async function afterPack(context) {
   const RUNTIME_NATIVE_MODULES = [
     'better-sqlite3',
     'sqlite-vec',
+    'ssh2',
     '@xenova/transformers',
     'onnxruntime-node',
     'onnxruntime-common',
