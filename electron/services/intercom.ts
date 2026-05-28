@@ -517,6 +517,19 @@ function isReservedOrVirtualIpv4(address: string): boolean {
     || first >= 224;
 }
 
+function isTailscaleIpv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
+    return false;
+  }
+  const [first, second] = octets;
+  return first === 100 && second >= 64 && second <= 127;
+}
+
+function isTailscaleInterfaceName(name: string): boolean {
+  return name.toLowerCase().includes('tailscale');
+}
+
 function scoreInterfaceName(name: string): number {
   const normalized = name.toLowerCase();
   const virtualMarkers = [
@@ -546,6 +559,10 @@ function scoreInterfaceName(name: string): number {
 }
 
 function scoreLanIpv4Candidate(name: string, address: string): number {
+  if (isTailscaleIpv4(address)) {
+    return isTailscaleInterfaceName(name) ? 90 : Number.NEGATIVE_INFINITY;
+  }
+
   if (isReservedOrVirtualIpv4(address)) {
     return Number.NEGATIVE_INFINITY;
   }

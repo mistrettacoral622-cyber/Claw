@@ -272,6 +272,15 @@ describe('intercom service', () => {
     })).toBe('192.168.1.45');
   });
 
+  it('uses a Tailscale IPv4 address when no private LAN address is available', async () => {
+    const { selectBestIntercomLanIpv4Address } = await import('@electron/services/intercom');
+
+    expect(selectBestIntercomLanIpv4Address({
+      Meta: [{ family: 'IPv4', internal: false, address: '198.18.0.1' } as never],
+      Tailscale: [{ family: 'IPv4', internal: false, address: '100.99.88.77' } as never],
+    })).toBe('100.99.88.77');
+  });
+
   it('reports host readiness for sharing this machine', async () => {
     const { getIntercomHostReadiness } = await import('@electron/services/intercom');
 

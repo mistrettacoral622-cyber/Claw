@@ -228,6 +228,23 @@ describe('remote instance routes', () => {
     } as never)).toBe('10.101.208.208');
   });
 
+  it('uses a Tailscale IPv4 address when no private LAN address is available', async () => {
+    const { selectBestLanIpv4Address } = await import('@electron/api/routes/remote-instances');
+
+    expect(selectBestLanIpv4Address({
+      Meta: [{
+        address: '198.18.0.1',
+        family: 'IPv4',
+        internal: false,
+      }],
+      Tailscale: [{
+        address: '100.99.88.77',
+        family: 'IPv4',
+        internal: false,
+      }],
+    } as never)).toBe('100.99.88.77');
+  });
+
   it('updates self inbound A2A settings and restarts the Gateway when network bind changes', async () => {
     parseJsonBodyMock.mockResolvedValue({
       enabled: true,
