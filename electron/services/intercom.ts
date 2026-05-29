@@ -1451,6 +1451,7 @@ function resolveSshHostAndUsername(route: IntercomRoute): { host: string; userna
 function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const remoteArgs = [
     'agent',
+    '--local',
     '--agent',
     route.agent,
     '--session-id',
@@ -1503,6 +1504,7 @@ function resolveRemoteCommandPrefix(route: IntercomRoute): string {
 function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const remoteArgs = [
     'agent',
+    '--local',
     '--agent',
     route.agent,
     '--session-id',

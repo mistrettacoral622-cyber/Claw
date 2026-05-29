@@ -504,6 +504,32 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
   });
 
+  it('runs SSH intercom agent calls locally on the remote host without probing its Gateway', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain("'agent' '--local' '--agent' 'ops'");
+  });
+
   it('retries legacy openclaw routes with the bundled Linux KTClaw command when the wrapper points at /usr/ktclaw', async () => {
     spawnMock
       .mockReturnValueOnce(createProcessMock({
@@ -719,7 +745,7 @@ describe('intercom service', () => {
       expect.any(Function),
     );
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("'agent' '--agent' 'ops'"),
+      expect.stringContaining("'agent' '--local' '--agent' 'ops'"),
       expect.any(Function),
     );
   });
