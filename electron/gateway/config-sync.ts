@@ -462,6 +462,7 @@ function ensureOptionalPluginsUpgraded(pluginIds: string[]): void {
 
 export async function syncGatewayConfigBeforeLaunch(
   appSettings: Awaited<ReturnType<typeof getAllSettings>>,
+  port?: number,
 ): Promise<void> {
   await syncProxyConfigToOpenClaw(appSettings);
 
@@ -488,7 +489,7 @@ export async function syncGatewayConfigBeforeLaunch(
   }
 
   try {
-    await syncGatewayTokenToConfig(appSettings.gatewayToken);
+    await syncGatewayTokenToConfig(appSettings.gatewayToken, port);
   } catch (err) {
     logger.warn('Failed to sync gateway token to openclaw.json:', err);
   }
@@ -576,7 +577,7 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
   }
 
   const appSettings = await getAllSettings();
-  await syncGatewayConfigBeforeLaunch(appSettings);
+  await syncGatewayConfigBeforeLaunch(appSettings, port);
 
   if (!existsSync(entryScript)) {
     throw new Error(`OpenClaw entry script not found at: ${entryScript}`);

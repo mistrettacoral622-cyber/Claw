@@ -1175,7 +1175,23 @@ export async function getActiveOpenClawProviders(): Promise<Set<string>> {
 /**
  * Write the KTClaw gateway token into ~/.openclaw/openclaw.json.
  */
-export async function syncGatewayTokenToConfig(token: string): Promise<void> {
+function isValidGatewayPort(port: number | undefined): port is number {
+  return Number.isInteger(port) && port >= 1024 && port <= 65535;
+}
+
+function shouldManageGatewayRemoteUrl(value: unknown, gatewayMode: unknown): boolean {
+  if (gatewayMode === 'remote') return false;
+  if (typeof value !== 'string' || !value.trim()) return true;
+
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(hostname);
+  } catch {
+    return true;
+  }
+}
+
+export async function syncGatewayTokenToConfig(token: string, port?: number): Promise<void> {
   return withConfigLock(async () => {
     const config = await readOpenClawJson();
 
@@ -1201,6 +1217,9 @@ export async function syncGatewayTokenToConfig(token: string): Promise<void> {
         : {}
     ) as Record<string, unknown>;
     remote.token = token;
+    if (isValidGatewayPort(port) && shouldManageGatewayRemoteUrl(remote.url, gateway.mode)) {
+      remote.url = `ws://127.0.0.1:${port}`;
+    }
     gateway.remote = remote;
 
     // Packaged KTClaw loads the renderer from file://, so the gateway must allow

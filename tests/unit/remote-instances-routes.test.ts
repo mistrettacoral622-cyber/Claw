@@ -55,10 +55,10 @@ vi.mock('@electron/utils/openclaw-auth', () => ({
   revokeA2AInboundApiKeyInOpenClaw: (...args: unknown[]) => revokeA2AInboundApiKeyInOpenClawMock(...args),
 }));
 
-function createCtx() {
+function createCtx(port = 18789) {
   return {
     gatewayManager: {
-      getStatus: () => ({ state: 'running', port: 18789 }),
+      getStatus: () => ({ state: 'running', port }),
       debouncedReload: vi.fn(),
       debouncedRestart: vi.fn(),
     },
@@ -206,6 +206,40 @@ describe('remote instance routes', () => {
           apiKeys: [
             { label: 'alice', maskedKey: 'ktclaw_a...wxyz' },
           ],
+        }),
+      }),
+    }));
+  });
+
+  it('builds remote self URLs from the configured gateway port', async () => {
+    getA2APluginConfigFromOpenClawMock.mockResolvedValue({
+      enabled: true,
+      inbound: {
+        agentCard: {
+          name: 'My KTClaw',
+        },
+      },
+      outbound: { agents: {} },
+    });
+    const { handleRemoteInstanceRoutes } = await import('@electron/api/routes/remote-instances');
+
+    const handled = await handleRemoteInstanceRoutes(
+      { method: 'GET' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/remote-instances/self'),
+      createCtx(24567),
+    );
+
+    expect(handled).toBe(true);
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, expect.objectContaining({
+      success: true,
+      self: expect.objectContaining({
+        gateway: expect.objectContaining({
+          port: 24567,
+        }),
+        urls: expect.objectContaining({
+          localAgentCardUrl: 'http://127.0.0.1:24567/.well-known/agent-card.json',
+          localA2AEndpointUrl: 'http://127.0.0.1:24567/a2a',
         }),
       }),
     }));

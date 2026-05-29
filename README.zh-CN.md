@@ -206,6 +206,10 @@ pnpm dev
 > Moonshot（Kimi）说明：KTClaw 默认保持开启 Kimi 的 web search。  
 > 当配置 Moonshot 后，KTClaw 也会将 OpenClaw 配置中的 Kimi web search 同步到中国区端点（`https://api.moonshot.cn/v1`）。
 
+### Gateway 端口
+
+KTClaw 默认在 `18789` 端口启动托管的 OpenClaw Gateway。如果其他 Claw 应用已经占用了这个端口，可以在 **设置 -> Gateway 配置** 中修改端口。保存后会自动重启托管 Gateway，并把本地 OpenClaw 客户端目标同步为 `ws://127.0.0.1:<port>`。
+
 ### 代理设置
 
 KTClaw 内置了代理设置，适用于需要通过本地代理客户端访问外网的场景，包括 Electron 本身和 OpenClaw Gateway。

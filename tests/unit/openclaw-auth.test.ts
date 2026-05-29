@@ -351,6 +351,7 @@ describe('A2A inbound OpenClaw config helpers', () => {
           token: 'stale-auth-token',
         },
         remote: {
+          url: 'ws://127.0.0.1:18789',
           token: 'stale-remote-token',
           endpoint: 'ws://127.0.0.1:18789',
         },
@@ -359,7 +360,7 @@ describe('A2A inbound OpenClaw config helpers', () => {
 
     const { syncGatewayTokenToConfig } = await import('@electron/utils/openclaw-auth');
 
-    await syncGatewayTokenToConfig('fresh-launch-token');
+    await syncGatewayTokenToConfig('fresh-launch-token', 24567);
 
     const config = await readOpenClawJson();
     const gateway = config.gateway as {
@@ -372,8 +373,35 @@ describe('A2A inbound OpenClaw config helpers', () => {
       token: 'fresh-launch-token',
     });
     expect(gateway.remote).toMatchObject({
+      url: 'ws://127.0.0.1:24567',
       token: 'fresh-launch-token',
       endpoint: 'ws://127.0.0.1:18789',
+    });
+  });
+
+  it('preserves non-loopback remote gateway urls when syncing the local launch port', async () => {
+    await writeOpenClawJson({
+      gateway: {
+        mode: 'local',
+        remote: {
+          url: 'wss://remote-gateway.example/ws',
+          token: 'stale-remote-token',
+        },
+      },
+    });
+
+    const { syncGatewayTokenToConfig } = await import('@electron/utils/openclaw-auth');
+
+    await syncGatewayTokenToConfig('fresh-launch-token', 24567);
+
+    const config = await readOpenClawJson();
+    const gateway = config.gateway as {
+      remote?: Record<string, unknown>;
+    };
+
+    expect(gateway.remote).toMatchObject({
+      url: 'wss://remote-gateway.example/ws',
+      token: 'fresh-launch-token',
     });
   });
 

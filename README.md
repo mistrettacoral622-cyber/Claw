@@ -210,6 +210,10 @@ The wizard preselects your system language when it is supported, and falls back 
 > Note for Moonshot (Kimi): KTClaw keeps Kimi web search enabled by default.  
 > When Moonshot is configured, KTClaw also syncs Kimi web search to the China endpoint (`https://api.moonshot.cn/v1`) in OpenClaw config.
 
+### Gateway Port
+
+KTClaw starts the managed OpenClaw Gateway on port `18789` by default. If another Claw app already uses that port, change the port in **Settings -> Gateway Configuration**. Saving the port restarts the managed Gateway and syncs the local OpenClaw client target to `ws://127.0.0.1:<port>`.
+
 ### Proxy Settings
 
 KTClaw includes built-in proxy settings for environments where Electron or the OpenClaw Gateway need to reach the internet through a local proxy client.
