@@ -24,6 +24,7 @@ import {
   isOpenClawOAuthPluginProviderKey,
 } from './provider-keys';
 import { OPENCLAW_WECHAT_CHANNEL_TYPE } from './channel-alias';
+import { isActiveConfiguredChannelSection } from './channel-config';
 import { withConfigLock } from './config-mutex';
 import { logger } from './logger';
 import { getOpenClawConfigDir } from './paths';
@@ -1194,6 +1195,14 @@ export async function syncGatewayTokenToConfig(token: string): Promise<void> {
     auth.token = token;
     gateway.auth = auth;
 
+    const remote = (
+      gateway.remote && typeof gateway.remote === 'object'
+        ? { ...(gateway.remote as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+    remote.token = token;
+    gateway.remote = remote;
+
     // Packaged KTClaw loads the renderer from file://, so the gateway must allow
     // that origin for the chat WebSocket handshake.
     const controlUi = (
@@ -1745,7 +1754,7 @@ export async function sanitizeOpenClawConfig(): Promise<void> {
       ];
 
       for (const { pluginId, channelType } of managedChannelPlugins) {
-        const hasConfiguredChannel = Boolean(channelsObj?.[channelType]);
+        const hasConfiguredChannel = isActiveConfiguredChannelSection(channelsObj?.[channelType]);
         if (hasConfiguredChannel) {
           continue;
         }

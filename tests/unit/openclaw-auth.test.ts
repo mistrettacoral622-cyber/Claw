@@ -342,6 +342,41 @@ describe('A2A inbound OpenClaw config helpers', () => {
     expect((afterLoopback.gateway as Record<string, unknown>).bind).toBe('loopback');
   });
 
+  it('keeps the gateway remote token aligned with the launch auth token', async () => {
+    await writeOpenClawJson({
+      gateway: {
+        mode: 'local',
+        auth: {
+          mode: 'token',
+          token: 'stale-auth-token',
+        },
+        remote: {
+          token: 'stale-remote-token',
+          endpoint: 'ws://127.0.0.1:18789',
+        },
+      },
+    });
+
+    const { syncGatewayTokenToConfig } = await import('@electron/utils/openclaw-auth');
+
+    await syncGatewayTokenToConfig('fresh-launch-token');
+
+    const config = await readOpenClawJson();
+    const gateway = config.gateway as {
+      auth?: Record<string, unknown>;
+      remote?: Record<string, unknown>;
+    };
+
+    expect(gateway.auth).toMatchObject({
+      mode: 'token',
+      token: 'fresh-launch-token',
+    });
+    expect(gateway.remote).toMatchObject({
+      token: 'fresh-launch-token',
+      endpoint: 'ws://127.0.0.1:18789',
+    });
+  });
+
   it('keeps Tailscale serve/funnel exposure on loopback', async () => {
     await writeOpenClawJson({
       gateway: {
@@ -428,6 +463,31 @@ describe('sanitizeOpenClawConfig', () => {
     expect(plugins.entries?.['openclaw-weixin']?.enabled).toBe(false);
     expect(plugins.entries?.qqbot?.enabled).toBe(false);
     expect(plugins.entries?.customPlugin?.enabled).toBe(true);
+  });
+
+  it('disables managed channel plugins when their channel section is disabled', async () => {
+    await writeOpenClawJson({
+      channels: {
+        feishu: {
+          enabled: false,
+          accounts: {
+            default: { enabled: true, appId: 'app-id', appSecret: 'secret' },
+          },
+        },
+      },
+      plugins: {
+        entries: {
+          'openclaw-lark': { enabled: true },
+        },
+      },
+    });
+
+    const { sanitizeOpenClawConfig } = await import('@electron/utils/openclaw-auth');
+    await sanitizeOpenClawConfig();
+
+    const config = await readOpenClawJson();
+    const plugins = config.plugins as { entries?: Record<string, { enabled?: boolean }> };
+    expect(plugins.entries?.['openclaw-lark']?.enabled).toBe(false);
   });
 
   it('preserves an explicitly enabled a2a plugin entry', async () => {

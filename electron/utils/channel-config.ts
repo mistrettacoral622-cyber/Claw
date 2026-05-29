@@ -714,21 +714,18 @@ export async function deleteChannelConfig(channelType: string): Promise<void> {
     });
 }
 
-function channelHasAnyAccount(channelSection: ChannelConfigData): boolean {
-    const accounts = channelSection.accounts as Record<string, ChannelConfigData> | undefined;
-    if (accounts && typeof accounts === 'object') {
-        return Object.values(accounts).some((acc) => acc.enabled !== false);
-    }
-    return false;
-}
-
 function channelHasConfiguredAccounts(channelSection: ChannelConfigData | undefined): boolean {
     if (!channelSection || typeof channelSection !== 'object') return false;
+    if (channelSection.enabled === false) return false;
     const accounts = channelSection.accounts as Record<string, ChannelConfigData> | undefined;
     if (accounts && typeof accounts === 'object') {
-        return Object.keys(accounts).length > 0;
+        return Object.values(accounts).some((account) => account.enabled !== false);
     }
     return Object.keys(channelSection).some((key) => !CHANNEL_TOP_LEVEL_KEYS_TO_KEEP.has(key));
+}
+
+export function isActiveConfiguredChannelSection(channelSection: ChannelConfigData | undefined): boolean {
+    return channelHasConfiguredAccounts(channelSection);
 }
 
 export async function listConfiguredChannels(): Promise<string[]> {
@@ -738,8 +735,7 @@ export async function listConfiguredChannels(): Promise<string[]> {
     if (config.channels) {
         for (const channelType of Object.keys(config.channels)) {
             const section = config.channels[channelType];
-            if (section.enabled === false) continue;
-            if (channelHasAnyAccount(section) || Object.keys(section).length > 0) {
+            if (isActiveConfiguredChannelSection(section)) {
                 channels.push(toUiChannelType(channelType));
             }
         }

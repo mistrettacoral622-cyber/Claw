@@ -38,4 +38,11 @@ describe('bundle openclaw script', () => {
     expect(wrapper).toContain('[ -f "/opt/KTClaw/ktclaw" ]');
     expect(wrapper).toContain('INSTALL_DIR="/opt/KTClaw"');
   });
+
+  it('stores the POSIX CLI wrapper without a UTF-8 BOM before the shebang', () => {
+    const wrapper = readFileSync(resolve(process.cwd(), 'resources/cli/posix/openclaw'));
+
+    expect([...wrapper.subarray(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
+    expect(wrapper.subarray(0, 2).toString('utf8')).toBe('#!');
+  });
 });

@@ -164,6 +164,28 @@ describe('channel credential normalization and duplicate checks', () => {
     await expect(listConfiguredChannels()).resolves.toContain('wechat');
   });
 
+  it('does not list placeholder channel sections as configured channels', async () => {
+    await writeOpenClawJson({
+      channels: {
+        feishu: {
+          enabled: true,
+        },
+        qqbot: {
+          enabled: false,
+          accounts: {
+            default: { enabled: true, appId: 'qq-app' },
+          },
+        },
+      },
+    });
+
+    const { listConfiguredChannels } = await import('@electron/utils/channel-config');
+    const channels = await listConfiguredChannels();
+
+    expect(channels).not.toContain('feishu');
+    expect(channels).not.toContain('qqbot');
+  });
+
   it('lists configured channel accounts with default account metadata', async () => {
     await writeOpenClawJson({
       channels: {
