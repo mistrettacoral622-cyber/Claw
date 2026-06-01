@@ -310,7 +310,7 @@ function collectDisplayTexts(value: unknown, texts: string[], seen = new Set<unk
     texts.push(value.text.trim());
   }
 
-  for (const key of ['content', 'response', 'reply', 'answer', 'output', 'message', 'result', 'data']) {
+  for (const key of ['content', 'payload', 'payloads', 'response', 'reply', 'answer', 'output', 'message', 'messages', 'result', 'data']) {
     collectDisplayTexts(value[key], texts, seen, depth + 1);
   }
 }
@@ -427,7 +427,7 @@ function collectRawMessages(value: unknown, messages: RawMessage[], seen = new S
     return;
   }
 
-  for (const key of ['messages', 'history', 'items', 'result', 'data']) {
+  for (const key of ['messages', 'payloads', 'history', 'items', 'result', 'data']) {
     collectRawMessages(value[key], messages, seen, depth + 1);
   }
 }
@@ -451,7 +451,7 @@ function findPreferredOutputText(value: unknown, depth = 0): string {
     }
   }
 
-  for (const key of ['result', 'data', 'message']) {
+  for (const key of ['result', 'data', 'message', 'payload', 'payloads', 'messages']) {
     const nested = findPreferredOutputText(value[key], depth + 1);
     if (nested) {
       return nested;
@@ -469,7 +469,7 @@ function stripNoisyIntercomLines(value: string): string {
     .trim();
 }
 
-function looksLikeStructuredOutput(value: string): boolean {
+export function looksLikeStructuredIntercomOutput(value: string): boolean {
   const trimmed = normalizeIntercomOutput(value);
   return /^[{[]/.test(trimmed) || /"(?:content|messages|meta|text)"\s*:/.test(trimmed);
 }
@@ -503,7 +503,7 @@ export function extractIntercomReplyText(stdout: string): string {
   }
 
   const cleaned = stripNoisyIntercomLines(trimmed);
-  if (looksLikeStructuredOutput(cleaned)) {
+  if (looksLikeStructuredIntercomOutput(cleaned)) {
     return '';
   }
   if (cleaned.length <= 4000) {

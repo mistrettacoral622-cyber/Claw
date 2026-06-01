@@ -53,6 +53,7 @@ import {
   deriveIntercomRouteDraft,
   emptyIntercomRouteDraft,
   extractIntercomReplyMessages,
+  looksLikeStructuredIntercomOutput,
   normalizeIntercomPort,
   parseIntercomConnectionShare,
   type IntercomRouteDraft,
@@ -141,8 +142,28 @@ function createTaskRunDetail(
   };
 }
 
+function dedupeIntercomMessages(messages: RawMessage[]): RawMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const contentKey = typeof message.content === 'string'
+      ? message.content
+      : JSON.stringify(message.content ?? '');
+    const key = `${message.role}:${contentKey}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): RawMessage[] {
-  const messages = extractIntercomReplyMessages(result.stdout);
+  const outputs = [result.stdout];
+  const successfulRun = result.exitCode === 0 || result.exitCode === null;
+  if (successfulRun && looksLikeStructuredIntercomOutput(result.stderr)) {
+    outputs.push(result.stderr);
+  }
+  const messages = dedupeIntercomMessages(outputs.flatMap((output) => extractIntercomReplyMessages(output)));
   if (messages.length > 0) {
     return messages.map((message, index) => ({
       ...message,

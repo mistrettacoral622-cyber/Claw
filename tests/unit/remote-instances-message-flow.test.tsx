@@ -133,6 +133,7 @@ let remoteStdout = JSON.stringify({
     },
   ],
 });
+let remoteStderr = '';
 
 function resetIntercomStore() {
   useIntercomStore.setState({
@@ -170,6 +171,7 @@ describe('RemoteInstances message flow', () => {
         },
       ],
     });
+    remoteStderr = '';
     vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === '/api/intercom' && (!init || init.method === undefined)) {
         return READY_INTERCOM_RESPONSE;
@@ -188,7 +190,7 @@ describe('RemoteInstances message flow', () => {
           args: [],
           exitCode: 0,
           stdout: remoteStdout,
-          stderr: '',
+          stderr: remoteStderr,
           durationMs: 123,
         };
       }
@@ -387,6 +389,33 @@ describe('RemoteInstances message flow', () => {
     expect(await screen.findByText('你好啊')).toBeInTheDocument();
     expect(screen.getByText(/感觉你一直在试探我/)).toBeInTheDocument();
     expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
+  });
+
+  it('renders OpenClaw JSON written to stderr as a normal assistant bubble', async () => {
+    remoteStdout = '';
+    remoteStderr = JSON.stringify({
+      payloads: [
+        {
+          text: '今天是 **2026年4月21日**，星期二。',
+          mediaUrl: null,
+        },
+      ],
+      meta: {
+        durationMs: 51364,
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: 'hello, 今天什么日期' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('hello, 今天什么日期')).toBeInTheDocument();
+    expect(screen.getByText(/今天是/)).toBeInTheDocument();
+    expect(screen.queryByText(/"payloads"/)).not.toBeInTheDocument();
   });
 
   it('sends a structured remote task and renders downloaded artifacts', async () => {
