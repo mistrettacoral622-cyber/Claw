@@ -4,6 +4,7 @@ export interface IntercomDesktopCameraRequest {
   requestId: string;
   taskId: string;
   artifactPath: string;
+  acceptedPath?: string;
   resultPath: string;
   reason?: string;
   requestedAt: number;

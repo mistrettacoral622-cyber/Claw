@@ -227,6 +227,9 @@ const INTERCOM_PROTOCOL_MARKER = 'KTClaw Intercom Protocol';
 const SSH_CONNECT_TIMEOUT_SECONDS = 10;
 const INTERCOM_COMMAND_TIMEOUT_MS = 300_000;
 const INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS = 120_000;
+const INTERCOM_DIRECT_FILE_INSPECT_TIMEOUT_MS = 45_000;
+const INTERCOM_DIRECT_FILE_PREVIEW_CHARS = 24_000;
+const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
@@ -260,6 +263,43 @@ const EXT_MIME_MAP: Record<string, string> = {
   '.ts': 'text/typescript',
   '.py': 'text/x-python',
 };
+const DIRECT_FILE_INSPECT_EXTENSIONS = new Set([
+  '.bash',
+  '.c',
+  '.cc',
+  '.conf',
+  '.cpp',
+  '.cs',
+  '.css',
+  '.csv',
+  '.go',
+  '.h',
+  '.hpp',
+  '.html',
+  '.ini',
+  '.java',
+  '.js',
+  '.json',
+  '.jsonl',
+  '.jsx',
+  '.log',
+  '.md',
+  '.mjs',
+  '.php',
+  '.ps1',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sh',
+  '.sql',
+  '.toml',
+  '.ts',
+  '.tsx',
+  '.txt',
+  '.xml',
+  '.yaml',
+  '.yml',
+]);
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -894,6 +934,19 @@ function toStoredRoute(route: IntercomRoute): Partial<IntercomRouteInput> {
 
 function quotePosix(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function quotePosixRemotePath(value: string): string {
+  const normalized = normalizeRemotePath(value);
+  const homePrefix = normalized.startsWith('~/')
+    ? normalized.slice(2)
+    : normalized.startsWith('$HOME/')
+      ? normalized.slice('$HOME/'.length)
+      : null;
+  if (homePrefix !== null) {
+    return `"$HOME/${homePrefix.replace(/(["\\`$])/g, '\\$1')}"`;
+  }
+  return quotePosix(normalized);
 }
 
 function quoteRemoteCommandPart(value: string): string {
@@ -1583,6 +1636,133 @@ function normalizeDirectTaskAction(action: string): 'screenshot' | 'camera' | nu
   return null;
 }
 
+interface DirectInboxFile {
+  name: string;
+  path: string;
+  mimeType: string;
+  size?: number;
+}
+
+function normalizeDirectInboxFiles(task: IntercomRemoteTaskRequest): DirectInboxFile[] {
+  const value = task.payload.inboxFiles;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): DirectInboxFile | null => {
+      if (!isRecord(entry)) {
+        return null;
+      }
+      const path = normalizeRemotePath(normalizeString(entry.path ?? entry.remotePath));
+      if (!path) {
+        return null;
+      }
+      const name = normalizeString(entry.name ?? entry.fileName) || basename(path);
+      const mimeType = normalizeString(entry.mimeType ?? entry.mime) || getMimeType(path);
+      const size = typeof entry.size === 'number' && Number.isFinite(entry.size) ? entry.size : undefined;
+      return { name, path, mimeType, size };
+    })
+    .filter((entry): entry is DirectInboxFile => Boolean(entry));
+}
+
+function isDirectTextPreviewFile(file: DirectInboxFile): boolean {
+  const extension = extname(file.path || file.name).toLowerCase();
+  return DIRECT_FILE_INSPECT_EXTENSIONS.has(extension)
+    || file.mimeType.startsWith('text/')
+    || /(?:json|xml|yaml|csv|markdown|javascript|typescript|python|shell|sql)/i.test(file.mimeType);
+}
+
+function shouldUseDirectInboxFileInspection(task: IntercomRemoteTaskRequest): boolean {
+  if (normalizeString(task.action).toLowerCase() !== 'remote_task') {
+    return false;
+  }
+  const files = normalizeDirectInboxFiles(task);
+  if (files.length === 0 || !files.some(isDirectTextPreviewFile)) {
+    return false;
+  }
+  const instruction = readTaskPayloadString(task, 'instruction');
+  if (!instruction) {
+    return true;
+  }
+  return /内容|查看|看看|读取|读一下|总结|摘要|预览|inspect|read|content|what|summary|summar/i.test(instruction);
+}
+
+function buildPosixInboxFileInspectionCommand(task: IntercomRemoteTaskRequest): string {
+  const files = normalizeDirectInboxFiles(task).slice(0, 8);
+  const instruction = readTaskPayloadString(task, 'instruction');
+  const textExtensions = Array.from(DIRECT_FILE_INSPECT_EXTENSIONS)
+    .map((extension) => `*${extension}`)
+    .join('|');
+  const script = [
+    'set -eu',
+    `limit=${INTERCOM_DIRECT_FILE_PREVIEW_CHARS}`,
+    `printf '%s\\n' ${quotePosix('Uploaded file inspection completed through SSH fast path.')}`,
+    instruction ? `printf 'Instruction: %s\\n' ${quotePosix(instruction)}` : '',
+    ...files.flatMap((file) => {
+      const textPreview = isDirectTextPreviewFile(file);
+      const name = file.name || basename(file.path);
+      const previewCommand = [
+        `printf '\\n\`\`\`text\\n'`,
+        'head -c "$limit" "$path" || true',
+        `printf '\\n\`\`\`\\n'`,
+        'if [ "${size:-0}" -gt "$limit" ] 2>/dev/null; then printf "... truncated to %s characters\\n" "$limit"; fi',
+      ].join('; ');
+      return [
+        `path=${quotePosixRemotePath(file.path)}`,
+        `name=${quotePosix(name)}`,
+        `mime=${quotePosix(file.mimeType)}`,
+        `printf '\\n## %s\\n' "$name"`,
+        `printf 'Path: %s\\n' "$path"`,
+        'if [ -f "$path" ]; then '
+          + 'size=$(wc -c < "$path" | tr -d "[:space:]" || printf 0); '
+          + 'printf "Size: %s bytes\\n" "$size"; '
+          + (textPreview
+            ? previewCommand
+            : `case "$path" in ${textExtensions}) ${previewCommand} ;; *) printf 'This file is not a supported text preview type (%s).\\n' "$mime" ;; esac`)
+          + '; else printf "File not found on remote machine.\\n"; fi',
+      ];
+    }),
+  ].filter(Boolean).join('; ');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildWindowsInboxFileInspectionCommand(task: IntercomRemoteTaskRequest): string {
+  const filesJson = JSON.stringify(normalizeDirectInboxFiles(task).slice(0, 8));
+  const filesJsonBase64 = Buffer.from(filesJson, 'utf8').toString('base64');
+  const instruction = readTaskPayloadString(task, 'instruction');
+  const textExtensionsRegex = Array.from(DIRECT_FILE_INSPECT_EXTENSIONS)
+    .map((extension) => extension.replace('.', '\\.'))
+    .join('|');
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+    `$limit = ${INTERCOM_DIRECT_FILE_PREVIEW_CHARS}`,
+    `$files = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${filesJsonBase64}')) | ConvertFrom-Json`,
+    `Write-Output ${JSON.stringify('Uploaded file inspection completed through SSH fast path.')}`,
+    instruction ? `Write-Output ${JSON.stringify(`Instruction: ${instruction}`)}` : '',
+    'foreach ($file in @($files)) {',
+    '$path = [string]$file.path',
+    "if ($path.StartsWith('~/')) { $path = Join-Path $HOME ($path.Substring(2).Replace('/', '\\')) } else { $path = $path.Replace('/', '\\') }",
+    'Write-Output ""',
+    'Write-Output ("## " + [string]$file.name)',
+    'Write-Output ("Path: " + $path)',
+    'if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Write-Output "File not found on remote machine."; continue }',
+    '$item = Get-Item -LiteralPath $path',
+    'Write-Output ("Size: " + $item.Length + " bytes")',
+    `$isText = ([string]$file.mimeType -match '^(text/)|json|xml|yaml|csv|markdown|javascript|typescript|python|shell|sql') -or ($path -match '(${textExtensionsRegex})$')`,
+    'if (-not $isText) { Write-Output ("This file is not a supported text preview type (" + [string]$file.mimeType + ")."); continue }',
+    '$text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop',
+    '$truncated = $false',
+    'if ($text.Length -gt $limit) { $text = $text.Substring(0, $limit); $truncated = $true }',
+    'Write-Output "```text"',
+    'Write-Output $text',
+    'Write-Output "```"',
+    'if ($truncated) { Write-Output ("... truncated to " + $limit + " characters") }',
+    '}',
+  ].filter(Boolean).join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
 function readTaskPayloadString(task: IntercomRemoteTaskRequest, key: string): string {
   const value = task.payload[key];
   return typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -1596,11 +1776,6 @@ function normalizeOutboxPath(value: string, taskId: string): string {
 
 function joinRemotePath(dir: string, fileName: string): string {
   return `${normalizeRemotePath(dir).replace(/\/+$/, '')}/${safeRemotePathPart(fileName, 'artifact')}`;
-}
-
-function remoteShellPath(value: string): string {
-  const normalized = normalizeRemotePath(value);
-  return normalized.startsWith('~/') ? `$HOME/${normalized.slice(2)}` : normalized;
 }
 
 function remotePowerShellHomePath(value: string): string {
@@ -1619,12 +1794,14 @@ function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
   requestId: string;
   taskId: string;
   artifactPath: string;
+  acceptedPath: string;
   resultPath: string;
   requestJson: string;
 } {
   const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
   const format = readTaskPayloadString(task, 'format').toLowerCase() === 'png' ? 'png' : 'jpg';
   const artifactPath = joinRemotePath(outbox, `camera.${format}`);
+  const acceptedPath = joinRemotePath(outbox, 'desktop-camera-accepted.json');
   const resultPath = joinRemotePath(outbox, 'desktop-camera-result.json');
   const requestId = `camera-${safeRemotePathPart(task.taskId, 'task')}-${randomUUID().slice(0, 8)}`;
   const reason = readTaskPayloadString(task, 'reason') || readTaskPayloadString(task, 'instruction');
@@ -1632,11 +1809,13 @@ function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
     requestId,
     taskId: task.taskId,
     artifactPath,
+    acceptedPath,
     resultPath,
     requestJson: JSON.stringify({
       requestId,
       taskId: task.taskId,
       artifactPath,
+      acceptedPath,
       resultPath,
       reason,
       requestedAt: Date.now(),
@@ -1646,15 +1825,17 @@ function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
 
 function buildPosixDesktopCameraCommand(task: IntercomRemoteTaskRequest): string {
   const request = buildDesktopCameraRequest(task);
-  const requestDir = remoteShellPath(`${INTERCOM_REMOTE_BASE_DIR}/desktop-camera-requests`);
-  const resultPath = remoteShellPath(request.resultPath);
+  const requestDir = `${INTERCOM_REMOTE_BASE_DIR}/desktop-camera-requests`;
   const script = [
     'set -eu',
-    `request_dir=${quotePosix(requestDir)}`,
-    `result_path=${quotePosix(resultPath)}`,
+    `request_dir=${quotePosixRemotePath(requestDir)}`,
+    `accepted_path=${quotePosixRemotePath(request.acceptedPath)}`,
+    `result_path=${quotePosixRemotePath(request.resultPath)}`,
     'mkdir -p "$request_dir" "${result_path%/*}"',
-    'rm -f "$result_path"',
+    'rm -f "$accepted_path" "$result_path"',
     `printf %s ${quotePosix(request.requestJson)} > "$request_dir/${safeRemotePathPart(request.requestId, 'request')}.json"`,
+    `i=0; while [ "$i" -lt ${INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS} ]; do if [ -f "$accepted_path" ]; then break; fi; sleep 1; i=$((i+1)); done`,
+    `if [ ! -f "$accepted_path" ]; then echo "KTClaw desktop camera UI did not accept within ${INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS}s" >&2; exit 86; fi`,
     `i=0; while [ "$i" -lt ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS} ]; do if [ -f "$result_path" ]; then cat "$result_path"; exit 0; fi; sleep 1; i=$((i+1)); done`,
     `echo "KTClaw desktop camera UI did not respond within ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}s" >&2`,
     'exit 86',
@@ -1666,16 +1847,20 @@ function buildWindowsDesktopCameraCommand(task: IntercomRemoteTaskRequest): stri
   const request = buildDesktopCameraRequest(task);
   const requestJsonBase64 = Buffer.from(request.requestJson, 'utf8').toString('base64');
   const requestFileName = `${safeRemotePathPart(request.requestId, 'request')}.json`;
+  const acceptedPath = remotePowerShellHomePath(request.acceptedPath);
   const resultPath = remotePowerShellHomePath(request.resultPath);
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$requestDir = Join-Path $HOME '.ktclaw\\intercom\\desktop-camera-requests'",
+    `$acceptedPath = ${JSON.stringify(acceptedPath)}`,
     `$resultPath = ${JSON.stringify(resultPath)}`,
     'New-Item -ItemType Directory -Force -Path $requestDir | Out-Null',
     'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resultPath) | Out-Null',
-    'Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue',
+    'Remove-Item -LiteralPath $acceptedPath,$resultPath -Force -ErrorAction SilentlyContinue',
     `$requestJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${requestJsonBase64}'))`,
     `[IO.File]::WriteAllText((Join-Path $requestDir ${JSON.stringify(requestFileName)}), $requestJson, [Text.Encoding]::UTF8)`,
+    `for ($i = 0; $i -lt ${INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS}; $i++) { if (Test-Path -LiteralPath $acceptedPath) { break }; Start-Sleep -Seconds 1 }`,
+    `if (-not (Test-Path -LiteralPath $acceptedPath)) { Write-Error "KTClaw desktop camera UI did not accept within ${INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS}s"; exit 86 }`,
     `for ($i = 0; $i -lt ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}; $i++) { if (Test-Path -LiteralPath $resultPath) { Get-Content -LiteralPath $resultPath -Raw; exit 0 }; Start-Sleep -Seconds 1 }`,
     `Write-Error "KTClaw desktop camera UI did not respond within ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}s"`,
     'exit 86',
@@ -1686,7 +1871,6 @@ function buildWindowsDesktopCameraCommand(task: IntercomRemoteTaskRequest): stri
 function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
   const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
   const artifactPath = joinRemotePath(outbox, 'screenshot.png');
-  const artifactShellPath = remoteShellPath(artifactPath);
   const successJson = buildDirectTaskResultJson({
     success: true,
     summary: 'Screenshot captured.',
@@ -1703,7 +1887,7 @@ function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
   });
   const script = [
     'set -eu',
-    `artifact=${quotePosix(artifactShellPath)}`,
+    `artifact=${quotePosixRemotePath(artifactPath)}`,
     'mkdir -p "${artifact%/*}"',
     'if command -v screencapture >/dev/null 2>&1; then screencapture -x "$artifact";',
     'elif command -v gnome-screenshot >/dev/null 2>&1; then gnome-screenshot -f "$artifact";',
@@ -1721,7 +1905,6 @@ function buildPosixCameraToolCommand(task: IntercomRemoteTaskRequest): string {
   const format = readTaskPayloadString(task, 'format').toLowerCase() === 'png' ? 'png' : 'jpg';
   const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
   const artifactPath = joinRemotePath(outbox, `camera.${format}`);
-  const artifactShellPath = remoteShellPath(artifactPath);
   const successJson = buildDirectTaskResultJson({
     success: true,
     summary: 'Camera photo captured.',
@@ -1738,7 +1921,7 @@ function buildPosixCameraToolCommand(task: IntercomRemoteTaskRequest): string {
   });
   const script = [
     'set -eu',
-    `artifact=${quotePosix(artifactShellPath)}`,
+    `artifact=${quotePosixRemotePath(artifactPath)}`,
     'mkdir -p "${artifact%/*}"',
     'if command -v imagesnap >/dev/null 2>&1; then imagesnap "$artifact" >/dev/null;',
     'elif command -v fswebcam >/dev/null 2>&1; then fswebcam --no-banner "$artifact" >/dev/null;',
@@ -2254,9 +2437,22 @@ async function runDirectIntercomCaptureTask(route: IntercomRoute, task: Intercom
   invocation: { command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv };
   commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
 } | null> {
-  const action = normalizeDirectTaskAction(task.action);
-  if (!action || route.transport !== 'ssh') {
+  if (route.transport !== 'ssh') {
     return null;
+  }
+  const action = normalizeDirectTaskAction(task.action);
+  if (!action) {
+    if (!shouldUseDirectInboxFileInspection(task)) {
+      return null;
+    }
+    try {
+      return await runRawIntercomRemoteCommand(route, buildPosixInboxFileInspectionCommand(task), INTERCOM_DIRECT_FILE_INSPECT_TIMEOUT_MS);
+    } catch (error) {
+      if (shouldRetryWithAutoRemoteDiscovery(route, error)) {
+        return runRawIntercomRemoteCommand(route, buildWindowsInboxFileInspectionCommand(task), INTERCOM_DIRECT_FILE_INSPECT_TIMEOUT_MS);
+      }
+      throw error;
+    }
   }
 
   if (action === 'screenshot') {

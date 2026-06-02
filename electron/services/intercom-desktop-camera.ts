@@ -42,17 +42,21 @@ function normalizeCameraRequest(value: unknown): IntercomDesktopCameraRequest | 
   const requestId = readString(row.requestId);
   const taskId = readString(row.taskId);
   const artifactPath = normalizeRemotePath(readString(row.artifactPath));
+  const acceptedPath = normalizeRemotePath(readString(row.acceptedPath));
   const resultPath = normalizeRemotePath(readString(row.resultPath));
   if (!requestId || !taskId || !artifactPath || !resultPath) {
     return null;
   }
-  if (!isIntercomOutboxPath(artifactPath) || !isIntercomOutboxPath(resultPath)) {
+  if (!isIntercomOutboxPath(artifactPath)
+    || !isIntercomOutboxPath(resultPath)
+    || (acceptedPath && !isIntercomOutboxPath(acceptedPath))) {
     return null;
   }
   return {
     requestId,
     taskId,
     artifactPath,
+    acceptedPath: acceptedPath || undefined,
     resultPath,
     reason: readString(row.reason) || undefined,
     requestedAt: typeof row.requestedAt === 'number' && Number.isFinite(row.requestedAt)
@@ -73,6 +77,18 @@ async function writeDesktopCameraResult(resultPath: string, payload: Record<stri
 
 export function getIntercomDesktopCameraRequestDir(): string {
   return INTERCOM_DESKTOP_CAMERA_REQUEST_DIR;
+}
+
+async function acknowledgeIntercomDesktopCameraRequest(request: IntercomDesktopCameraRequest): Promise<void> {
+  if (!request.acceptedPath) {
+    return;
+  }
+  await writeDesktopCameraResult(request.acceptedPath, {
+    success: true,
+    requestId: request.requestId,
+    taskId: request.taskId,
+    acceptedAt: Date.now(),
+  });
 }
 
 export async function completeIntercomDesktopCameraRequest(input: IntercomDesktopCameraCompleteInput): Promise<{
@@ -144,6 +160,12 @@ export function startIntercomDesktopCameraRequestWatcher(
       seen.add(fileName);
       await rm(filePath, { force: true });
       if (request) {
+        await acknowledgeIntercomDesktopCameraRequest(request).catch((error) => {
+          logger.warn('Failed to acknowledge intercom desktop camera request', {
+            fileName,
+            error: String(error),
+          });
+        });
         onRequest(request);
       }
     } catch (error) {

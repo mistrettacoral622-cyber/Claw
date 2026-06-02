@@ -812,6 +812,61 @@ describe('intercom service', () => {
     expect(result.sessionId).toBe('intercom-task-task-1');
   });
 
+  it('uses a direct SSH text preview path for uploaded file inspection tasks', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: [
+        'Uploaded file inspection completed through SSH fast path.',
+        'Instruction: 这个文件内容是什么',
+        '',
+        '## report.md',
+        'Path: ~/.ktclaw/intercom/inbox/dev/task-1/report.md',
+        'Size: 42 bytes',
+        '',
+        '```text',
+        'hello from uploaded file',
+        '```',
+      ].join('\n'),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'remote_task',
+      payload: {
+        instruction: '这个文件内容是什么',
+        inboxFiles: [
+          {
+            name: 'report.md',
+            path: '~/.ktclaw/intercom/inbox/dev/task-1/report.md',
+            mimeType: 'text/markdown',
+            size: 42,
+          },
+        ],
+      },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('head -c');
+    expect(sshArgs.at(-1)).toContain('report.md');
+    expect(sshArgs.at(-1)).not.toContain("'agent' '--local'");
+    expect(result.result.summary).toContain('hello from uploaded file');
+  });
+
   it('normalizes structured OpenClaw task output written to stderr', async () => {
     const { normalizeIntercomRemoteTaskCommandResult } = await import('@electron/services/intercom');
 
