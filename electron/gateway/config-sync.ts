@@ -105,6 +105,7 @@ export function buildGatewayCommandScript(options: GatewayCommandScriptOptions):
     'set "OPENCLAW_SERVICE_MARKER=openclaw"',
     'set "OPENCLAW_SERVICE_KIND=gateway"',
     `set "OPENCLAW_SERVICE_VERSION=${escapeCmdSetValue(openclawVersion)}"`,
+    'set "OPENCLAW_DISABLE_BONJOUR=1"',
     'set "OPENCLAW_NO_RESPAWN=1"',
     'set "OPENCLAW_EMBEDDED_IN=KTClaw"',
     'set "OPENCLAW_NODE_OPTIONS_READY=1"',
@@ -622,6 +623,10 @@ export async function prepareGatewayLaunchContext(port: number): Promise<Gateway
     OPENCLAW_CONFIG_PATH: join(getOpenClawConfigDir(), 'openclaw.json'),
     OPENCLAW_SKIP_CHANNELS: skipChannels ? '1' : '',
     CLAWDBOT_SKIP_CHANNELS: skipChannels ? '1' : '',
+    // KTClaw embeds the Gateway for local loopback use. Bonjour/mDNS discovery
+    // can block the first packaged startup while probing or resolving name
+    // conflicts, before OpenClaw attaches its WebSocket handlers.
+    OPENCLAW_DISABLE_BONJOUR: '1',
     OPENCLAW_NO_RESPAWN: '1',
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',

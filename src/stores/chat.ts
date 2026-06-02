@@ -98,12 +98,7 @@ function resolvePreferredProviderModelRef(): string | undefined {
   }
 
   const vendor = vendorMap.get(preferredAccount.vendorId);
-  const modelId = preferredAccount.model || vendor?.defaultModelId;
-  if (!modelId) {
-    return undefined;
-  }
-
-  return `${preferredAccount.vendorId}/${modelId}`;
+  return buildAgentModelRef(preferredAccount, vendor);
 }
 
 function resolveChatModelSelection(agentId?: string | null): string | undefined {

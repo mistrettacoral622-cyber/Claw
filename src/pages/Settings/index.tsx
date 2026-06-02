@@ -1,4 +1,4 @@
-﻿import { useEffect, useId, useState } from 'react';
+﻿import { useEffect, useId, useMemo, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -28,8 +28,10 @@ import { Switch } from '@/components/ui/switch';
 import { SUPPORTED_LANGUAGES } from '@/i18n';
 import { invokeIpc, toUserMessage } from '@/lib/api-client';
 import { hostApiFetch } from '@/lib/host-api';
+import { buildAgentModelRef } from '@/lib/providers';
 import { cn } from '@/lib/utils';
 import { useGatewayStore } from '@/stores/gateway';
+import { useProviderStore } from '@/stores/providers';
 import { useSettingsStore } from '@/stores/settings';
 import { useSkillsStore } from '@/stores/skills';
 import { useUpdateStore } from '@/stores/update';
@@ -1084,15 +1086,6 @@ function GeneralSection() {
 
 /* ─── Section: Model & Provider (07.2) ─── */
 
-const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6 (Anthropic)' },
-  { value: 'claude-opus-4-6', label: 'claude-opus-4-6 (Anthropic)' },
-  { value: 'gpt-4o', label: 'gpt-4o (OpenAI)' },
-  { value: 'gpt-4o-mini', label: 'gpt-4o-mini (OpenAI)' },
-  { value: 'gemini-2.0-flash', label: 'gemini-2.0-flash (Google)' },
-  { value: 'deepseek-chat', label: 'deepseek-chat (DeepSeek)' },
-];
-
 export function ModelProviderSection({
   gatewayStatus,
   restartGateway,
@@ -1102,11 +1095,51 @@ export function ModelProviderSection({
 }) {
   const isConnected = gatewayStatus.state === 'running';
   const { gatewayPort, setGatewayPort, defaultModel, setDefaultModel, contextLimit, setContextLimit } = useSettingsStore();
+  const providerAccounts = useProviderStore((state) => state.accounts);
+  const providerVendors = useProviderStore((state) => state.vendors);
+  const refreshProviderSnapshot = useProviderStore((state) => state.refreshProviderSnapshot);
+  const setDefaultAccount = useProviderStore((state) => state.setDefaultAccount);
   const [portDraft, setPortDraft] = useState(String(gatewayPort));
   const [savingPort, setSavingPort] = useState(false);
   const defaultModelSelectId = useId();
   const contextLimitId = useId();
   const gatewayPortId = useId();
+  const modelOptions = useMemo(() => {
+    const vendorMap = new Map(providerVendors.map((vendor) => [vendor.id, vendor]));
+    const options: Array<{ value: string; label: string; accountId: string }> = [];
+    for (const account of providerAccounts) {
+      if (!account.enabled) continue;
+      const vendor = vendorMap.get(account.vendorId);
+      const modelId = account.model || vendor?.defaultModelId;
+      const value = buildAgentModelRef(account, vendor);
+      if (!modelId || !value) continue;
+      if (options.some((option) => option.value === value)) continue;
+      options.push({
+        value,
+        label: `${vendor?.name || account.vendorId} / ${modelId}`,
+        accountId: account.id,
+      });
+    }
+    return options;
+  }, [providerAccounts, providerVendors]);
+  const selectedDefaultModel = modelOptions.some((option) => option.value === defaultModel)
+    ? defaultModel
+    : '';
+
+  useEffect(() => {
+    if (providerAccounts.length > 0 && providerVendors.length > 0) {
+      return;
+    }
+    void refreshProviderSnapshot();
+  }, [providerAccounts.length, providerVendors.length, refreshProviderSnapshot]);
+
+  const handleDefaultModelChange = (value: string) => {
+    setDefaultModel(value);
+    const option = modelOptions.find((entry) => entry.value === value);
+    if (option) {
+      void setDefaultAccount(option.accountId).catch(() => { });
+    }
+  };
 
   return (
     <>
@@ -1118,11 +1151,12 @@ export function ModelProviderSection({
           </label>
           <select
             id={defaultModelSelectId}
-            value={defaultModel}
-            onChange={(e) => setDefaultModel(e.target.value)}
+            value={selectedDefaultModel}
+            onChange={(e) => handleDefaultModelChange(e.target.value)}
             className="w-full appearance-none rounded-lg border border-black/10 bg-white px-3 py-2 text-[13px] text-[#000000] outline-none focus:border-clawx-ac"
           >
-            {MODEL_OPTIONS.map((m) => (
+            <option value="">Not configured</option>
+            {modelOptions.map((m) => (
               <option key={m.value} value={m.value}>{m.label}</option>
             ))}
           </select>

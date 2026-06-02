@@ -124,6 +124,14 @@ describe('AppSettings schema — new fields', () => {
     const value = await getSetting('watchedMemoryDirs');
     expect(value).toEqual(['/home/user/docs']);
   });
+
+  it('clears legacy static default models instead of persisting bundled choices', async () => {
+    const { setSetting, getSetting } = await import('../../electron/utils/store');
+    await setSetting('defaultModel', 'claude-sonnet-4-6');
+    const value = await getSetting('defaultModel');
+    expect(value).toBe('');
+    expect(storeData.defaultModel).toBe('');
+  });
 });
 
 // ─── Settings route side-effect hooks ────────────────────────────────────────

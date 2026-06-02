@@ -95,8 +95,10 @@ function resolveResourcesDir(platform, executable) {
   return path.join(path.dirname(executable), 'resources');
 }
 
-function assertPackagedRuntimeResources(resourcesDir) {
+function assertPackagedRuntimeResources(resourcesDir, platform) {
+  const uvBinary = platform === 'win' ? 'bin/uv.exe' : 'bin/uv';
   const required = [
+    uvBinary,
     'openclaw/node_modules/@larksuiteoapi/node-sdk/package.json',
     'openclaw-plugins/a2a/openclaw.plugin.json',
     'openclaw-plugins/a2a/node_modules/@a2anet/a2a-utils/package.json',
@@ -125,7 +127,7 @@ function getLaunchArgs(platform) {
 async function main() {
   const platform = normalizePlatform(platformArg || process.platform);
   const executable = findExecutable(platform, releaseDir);
-  assertPackagedRuntimeResources(resolveResourcesDir(platform, executable));
+  assertPackagedRuntimeResources(resolveResourcesDir(platform, executable), platform);
   const launchArgs = getLaunchArgs(platform);
   const child = spawn(executable, launchArgs, {
     cwd: path.dirname(executable),

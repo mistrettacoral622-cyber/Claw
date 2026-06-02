@@ -681,7 +681,7 @@ describe('ChatInput agent targeting', () => {
     );
   });
 
-  it('does not update the agent model when the session model override fails', async () => {
+  it('still updates the agent model when the session model override fails', async () => {
     agentsState.agents = [
       {
         id: 'main',
@@ -713,7 +713,7 @@ describe('ChatInput agent targeting', () => {
       },
     ];
 
-    const updateAgentMock = vi.fn();
+    const updateAgentMock = vi.fn(async () => undefined);
     agentsState.updateAgent = updateAgentMock;
     invokeIpcMock.mockResolvedValue({ success: false, error: 'invalid model' });
 
@@ -723,10 +723,9 @@ describe('ChatInput agent targeting', () => {
     fireEvent.click(await screen.findByText('Moonshot / kimi-k2.5'));
 
     await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith(expect.stringContaining('invalid model'));
+      expect(updateAgentMock).toHaveBeenCalledWith('main', { model: 'moonshot/kimi-k2.5' });
     });
-
-    expect(updateAgentMock).not.toHaveBeenCalled();
+    expect(toastErrorMock).not.toHaveBeenCalledWith(expect.stringContaining('invalid model'));
   });
 
   it('clears the current session model override when inheriting the default model', async () => {

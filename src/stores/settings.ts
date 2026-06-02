@@ -164,6 +164,17 @@ interface SettingsState {
 
 const SETTINGS_STORAGE_KEY = 'ktclaw-settings';
 const LEGACY_SETTINGS_STORAGE_KEY = 'clawx-settings';
+const LEGACY_STATIC_DEFAULT_MODELS = new Set([
+  'claude-sonnet-4-6',
+  'claude-opus-4-6',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gemini-3.1-pro-preview',
+  'gemini-2.0-flash',
+  'deepseek-chat',
+]);
 
 function createSettingsStateStorage(): StateStorage {
   return {
@@ -217,6 +228,27 @@ function normalizeListEntry(value: string): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function normalizeDefaultModel(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  if (!normalized || LEGACY_STATIC_DEFAULT_MODELS.has(normalized)) {
+    return '';
+  }
+  return normalized;
+}
+
+function normalizePersistedSettingsState(persistedState: unknown): unknown {
+  if (!persistedState || typeof persistedState !== 'object') {
+    return persistedState;
+  }
+
+  const next = { ...(persistedState as Record<string, unknown>) };
+  if (Object.prototype.hasOwnProperty.call(next, 'defaultModel')) {
+    next.defaultModel = normalizeDefaultModel(next.defaultModel);
+  }
+  return next;
+}
+
 function appendUniqueEntry(entries: string[], value: string): string[] {
   const normalized = normalizeListEntry(value);
   if (!normalized || entries.includes(normalized)) {
@@ -259,7 +291,7 @@ const defaultSettings = {
   myName: 'Commander',
   brandLogoDataUrl: null as string | null,
   brandIconDataUrl: null as string | null,
-  defaultModel: 'claude-sonnet-4-6',
+  defaultModel: '',
   contextLimit: 32000,
   showToolCalls: false,
   emojiAvatar: true,
@@ -316,14 +348,18 @@ export const useSettingsStore = create<SettingsState>()(
       init: async () => {
         try {
           const settings = await hostApiFetch<Partial<typeof defaultSettings>>('/api/settings');
+          const normalizedSettings = normalizePersistedSettingsState(settings) as Partial<typeof defaultSettings>;
           const resolvedLanguage = settings.language
             ? resolveSupportedLanguage(settings.language)
             : undefined;
           set((state) => ({
             ...state,
-            ...settings,
+            ...normalizedSettings,
             ...(resolvedLanguage ? { language: resolvedLanguage } : {}),
           }));
+          if (settings.defaultModel !== undefined && normalizedSettings.defaultModel !== settings.defaultModel) {
+            void persistSettingValue('defaultModel', normalizedSettings.defaultModel ?? '').catch(() => { });
+          }
           if (resolvedLanguage) {
             i18n.changeLanguage(resolvedLanguage);
           }
@@ -430,8 +466,15 @@ export const useSettingsStore = create<SettingsState>()(
         set({ myName });
         void persistSettingsPatch({ myName }).catch(() => { });
       },
-      setDefaultModel: (defaultModel) => set({ defaultModel }),
-      setContextLimit: (contextLimit) => set({ contextLimit }),
+      setDefaultModel: (defaultModel) => {
+        const normalizedDefaultModel = normalizeDefaultModel(defaultModel);
+        set({ defaultModel: normalizedDefaultModel });
+        void persistSettingValue('defaultModel', normalizedDefaultModel).catch(() => { });
+      },
+      setContextLimit: (contextLimit) => {
+        set({ contextLimit });
+        void persistSettingValue('contextLimit', contextLimit).catch(() => { });
+      },
       setShowToolCalls: (showToolCalls) => set({ showToolCalls }),
       setEmojiAvatar: (emojiAvatar) => set({ emojiAvatar }),
       setHideAvatarBg: (hideAvatarBg) => set({ hideAvatarBg }),
@@ -562,6 +605,12 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: SETTINGS_STORAGE_KEY,
       storage: createJSONStorage(createSettingsStateStorage),
+      version: 1,
+      migrate: (persistedState) => normalizePersistedSettingsState(persistedState),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...(normalizePersistedSettingsState(persistedState) as Partial<SettingsState>),
+      }),
     }
   )
 );

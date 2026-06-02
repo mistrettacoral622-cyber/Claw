@@ -20,6 +20,7 @@ import {
   syncProviderConfigToOpenClaw,
   updateAgentModelProvider,
 } from '../../utils/openclaw-auth';
+import { buildNonOAuthAgentProviderUpdate } from '../../main/provider-model-sync';
 import { logger } from '../../utils/logger';
 
 const GOOGLE_OAUTH_RUNTIME_PROVIDER = 'google-gemini-cli';
@@ -416,6 +417,17 @@ async function syncCustomProviderAgentModel(
   });
 }
 
+async function syncStandardProviderAgentModel(
+  config: ProviderConfig,
+): Promise<void> {
+  const payload = buildNonOAuthAgentProviderUpdate(config, config.id, getProviderModelRef(config));
+  if (!payload) {
+    return;
+  }
+
+  await updateAgentModelProvider(payload.providerKey, payload.entry);
+}
+
 async function syncProviderToRuntime(
   config: ProviderConfig,
   apiKey: string | undefined,
@@ -427,6 +439,7 @@ async function syncProviderToRuntime(
 
   await syncProviderSecretToRuntime(config, context.runtimeProviderKey, apiKey);
   await syncRuntimeProviderConfig(config, context);
+  await syncStandardProviderAgentModel(config);
   await syncCustomProviderAgentModel(config, context.runtimeProviderKey, apiKey);
   return context;
 }
@@ -580,6 +593,8 @@ export async function syncDefaultProviderToRuntime(
     if (providerKey) {
       await saveProviderKeyToOpenClaw(ock, providerKey);
     }
+
+    await syncStandardProviderAgentModel(provider);
   } else {
     if (browserOAuthRuntimeProvider) {
       const secret = await getProviderSecret(provider.id);

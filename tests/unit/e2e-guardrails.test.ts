@@ -30,8 +30,13 @@ describe('E2E / release smoke guardrails', () => {
     expect(scripts['package:prepare']).toContain('bundle:preinstalled-skills');
     expect(scripts['package:prepare']).toContain('model:download');
 
+    expect(scripts['build']).toContain('package');
+    expect(scripts['package']).toContain('uv:download');
+    expect(scripts['package:mac:ci']).toContain('uv:download:mac');
     expect(scripts['package:mac:ci']).toContain('--publish never');
+    expect(scripts['package:win:ci']).toContain('uv:download:win');
     expect(scripts['package:win:ci']).toContain('--publish never');
+    expect(scripts['package:linux:ci']).toContain('uv:download:linux');
     expect(scripts['package:linux:ci']).toContain('--publish never');
     expect(scripts['smoke:linux']).toContain('package:linux:smoke');
   });
@@ -84,10 +89,12 @@ describe('E2E / release smoke guardrails', () => {
   it('requires packaged startup smoke to wait for Gateway readiness', () => {
     const startupSmoke = readFileSync(resolve(process.cwd(), 'scripts/smoke/packaged-startup.mjs'), 'utf8');
     const mainProcess = readFileSync(resolve(process.cwd(), 'electron/main/index.ts'), 'utf8');
+    const gatewayConfigSync = readFileSync(resolve(process.cwd(), 'electron/gateway/config-sync.ts'), 'utf8');
 
     expect(startupSmoke).toContain('KTCLAW_STARTUP_SMOKE_WAIT_FOR_GATEWAY');
     expect(startupSmoke).toContain('240_000');
     expect(startupSmoke).toContain('OPENCLAW_DISABLE_BONJOUR');
+    expect(gatewayConfigSync).toContain('OPENCLAW_DISABLE_BONJOUR');
     expect(mainProcess).toContain('STARTUP_SMOKE_WAIT_FOR_GATEWAY');
     expect(mainProcess).toContain('startupSmokeRendererLoaded');
     expect(mainProcess).toContain('startupSmokeGatewayRunning');
@@ -134,5 +141,14 @@ describe('E2E / release smoke guardrails', () => {
     expect(packageWinManualWorkflow).toContain('pnpm run package:prepare');
     expect(packageWinManualWorkflow).toContain('pnpm exec electron-builder --win --x64 --publish never');
     expect(packageWinManualWorkflow).toContain('pnpm exec electron-builder --win --arm64 --publish never');
+  });
+
+  it('guards bundled uv in packaged runtime smoke checks', () => {
+    const startupSmoke = readFileSync(resolve(process.cwd(), 'scripts/smoke/packaged-startup.mjs'), 'utf8');
+    const releaseSmoke = readFileSync(resolve(process.cwd(), 'scripts/smoke/release-smoke.mjs'), 'utf8');
+
+    expect(startupSmoke).toContain('bin/uv.exe');
+    expect(startupSmoke).toContain('bin/uv');
+    expect(releaseSmoke).toContain('resources/bin/uv');
   });
 });

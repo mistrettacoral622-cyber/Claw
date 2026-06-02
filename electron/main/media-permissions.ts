@@ -18,20 +18,5 @@ export function shouldAllowMediaPermission(input: MediaPermissionDecisionInput):
     ? input.mediaTypes.map((value) => value.toLowerCase())
     : [];
 
-  // Permit video-only (Phase 18 camera)
-  if (mediaTypes.includes('video') && !mediaTypes.includes('audio')) {
-    return true;
-  }
-
-  // Permit audio-only (Phase 20 ASR microphone)
-  if (mediaTypes.includes('audio') && !mediaTypes.includes('video')) {
-    return true;
-  }
-
-  // Permit audio+video combined (future use — currently no consumer)
-  if (mediaTypes.includes('video') && mediaTypes.includes('audio')) {
-    return true;
-  }
-
-  return false;
+  return mediaTypes.includes('video') && !mediaTypes.includes('audio');
 }

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ChevronLeft,
@@ -9,7 +9,9 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useGatewayStore } from '@/stores/gateway';
 import { useSettingsStore } from '@/stores/settings';
+import { useProviderStore } from '@/stores/providers';
 import { hostApiFetch } from '@/lib/host-api';
+import { buildAgentModelRef } from '@/lib/providers';
 import { trackUiEvent } from '@/lib/telemetry';
 import { ProvidersSettings } from '@/components/settings/ProvidersSettings';
 import { FeedbackState } from '@/components/common/FeedbackState';
@@ -24,15 +26,6 @@ const DEFAULT_USAGE_FETCH_MAX_ATTEMPTS = 6;
 const WINDOWS_USAGE_FETCH_MAX_ATTEMPTS = 10;
 const USAGE_FETCH_RETRY_DELAY_MS = 1500;
 
-const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { value: 'gpt-5.4', label: 'GPT-5.4' },
-  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
-  { value: 'deepseek-chat', label: 'DeepSeek Chat' },
-];
-
 type ModelsProps = {
   embedded?: boolean;
 };
@@ -46,6 +39,10 @@ export function Models({ embedded = false }: ModelsProps) {
   const setDefaultModel = useSettingsStore((state) => state.setDefaultModel);
   const contextLimit = useSettingsStore((state) => state.contextLimit);
   const setContextLimit = useSettingsStore((state) => state.setContextLimit);
+  const providerAccounts = useProviderStore((state) => state.accounts);
+  const providerVendors = useProviderStore((state) => state.vendors);
+  const refreshProviderSnapshot = useProviderStore((state) => state.refreshProviderSnapshot);
+  const setDefaultAccount = useProviderStore((state) => state.setDefaultAccount);
   const gatewayPort = useSettingsStore((state) => state.gatewayPort);
   const setGatewayPort = useSettingsStore((state) => state.setGatewayPort);
   const isGatewayRunning = gatewayStatus.state === 'running';
@@ -74,6 +71,13 @@ export function Models({ embedded = false }: ModelsProps) {
   useEffect(() => {
     setGatewayPortDraft(String(gatewayPort));
   }, [gatewayPort]);
+
+  useEffect(() => {
+    if (providerAccounts.length > 0 && providerVendors.length > 0) {
+      return;
+    }
+    void refreshProviderSnapshot();
+  }, [providerAccounts.length, providerVendors.length, refreshProviderSnapshot]);
 
   useEffect(() => {
     if (usageFetchTimerRef.current) {
@@ -177,9 +181,27 @@ export function Models({ embedded = false }: ModelsProps) {
   const safeUsagePage = Math.min(usagePage, usageTotalPages);
   const pagedUsageHistory = filteredUsageHistory.slice((safeUsagePage - 1) * usagePageSize, safeUsagePage * usagePageSize);
   const usageLoading = isGatewayRunning && visibleUsageHistory.length === 0;
-  const modelOptions = MODEL_OPTIONS.some((option) => option.value === defaultModel)
-    ? MODEL_OPTIONS
-    : [{ value: defaultModel, label: defaultModel }, ...MODEL_OPTIONS];
+  const modelOptions = useMemo(() => {
+    const vendorMap = new Map(providerVendors.map((vendor) => [vendor.id, vendor]));
+    const options: Array<{ value: string; label: string; accountId: string }> = [];
+    for (const account of providerAccounts) {
+      if (!account.enabled) continue;
+      const vendor = vendorMap.get(account.vendorId);
+      const modelId = account.model || vendor?.defaultModelId;
+      const value = buildAgentModelRef(account, vendor);
+      if (!modelId || !value) continue;
+      if (options.some((option) => option.value === value)) continue;
+      options.push({
+        value,
+        label: `${vendor?.name || account.vendorId} / ${modelId}`,
+        accountId: account.id,
+      });
+    }
+    return options;
+  }, [providerAccounts, providerVendors]);
+  const selectedDefaultModel = modelOptions.some((option) => option.value === defaultModel)
+    ? defaultModel
+    : '';
   const gatewayStateLabel = isGatewayRunning
     ? '已连接'
     : gatewayStatus.state === 'starting' || gatewayStatus.state === 'reconnecting'
@@ -195,6 +217,14 @@ export function Models({ embedded = false }: ModelsProps) {
 
     setGatewayPort(nextPort);
     setDoctorSummary(`Gateway port updated to ${nextPort}.`);
+  };
+
+  const handleDefaultModelChange = (value: string) => {
+    setDefaultModel(value);
+    const option = modelOptions.find((entry) => entry.value === value);
+    if (option) {
+      void setDefaultAccount(option.accountId).catch(() => { });
+    }
   };
 
   const handleRunDoctor = async () => {
@@ -254,10 +284,11 @@ export function Models({ embedded = false }: ModelsProps) {
                   </label>
                   <select
                     id={defaultModelSelectId}
-                    value={defaultModel}
-                    onChange={(event) => setDefaultModel(event.target.value)}
+                    value={selectedDefaultModel}
+                    onChange={(event) => handleDefaultModelChange(event.target.value)}
                     className="w-full rounded-xl border border-black/10 bg-background px-3 py-2 text-[13px] text-foreground outline-none transition focus:border-[#0a84ff] dark:border-white/10"
                   >
+                    <option value="">Not configured</option>
                     {modelOptions.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}

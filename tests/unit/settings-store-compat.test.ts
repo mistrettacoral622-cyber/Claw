@@ -32,6 +32,22 @@ describe('settings store persistence compatibility', () => {
     expect(localStorage.getItem(LEGACY_SETTINGS_KEY)).toBeNull();
   });
 
+  it('migrates old hardcoded default model to empty', async () => {
+    localStorage.setItem(
+      KTCLAW_SETTINGS_KEY,
+      JSON.stringify({
+        state: {
+          defaultModel: 'claude-sonnet-4-6',
+        },
+        version: 0,
+      }),
+    );
+
+    const { useSettingsStore } = await import('@/stores/settings');
+
+    expect(useSettingsStore.getState().defaultModel).toBe('');
+  });
+
   it('persists setup completion to the host settings api', async () => {
     const { hostApiFetch } = await import('@/lib/host-api');
     const { useSettingsStore } = await import('@/stores/settings');

@@ -16,6 +16,13 @@ describe('download bundled uv script', () => {
   it('keeps the PowerShell zip extraction branch for Windows hosts', () => {
     expect(scriptSource).toContain("if (hostPlatform === 'win32')");
     expect(scriptSource).toContain("command: 'powershell.exe'");
-    expect(scriptSource).toContain('ExtractToDirectory');
+    expect(scriptSource).toContain('Expand-Archive');
+    expect(scriptSource).toContain('-Force');
+  });
+
+  it('keeps zx-compatible script invocation detection', () => {
+    expect(scriptSource).toContain('export function isMainInvocation');
+    expect(scriptSource).toContain('.slice(2)');
+    expect(scriptSource).toContain('path.resolve(arg) === currentModulePath');
   });
 });

@@ -76,6 +76,7 @@ if (linuxArtifacts.length === 0) {
 
 if (existsSync(linuxUnpackedDir)) {
   const unpackedChecks = [
+    'resources/bin/uv',
     'resources/preinstalled-skills/.preinstalled-lock.json',
     'resources/openclaw/package.json',
     'resources/openclaw/node_modules',
@@ -84,8 +85,6 @@ if (existsSync(linuxUnpackedDir)) {
     'resources/openclaw-plugins/a2a/openclaw.plugin.json',
     'resources/openclaw-plugins/a2a/node_modules/@a2anet/a2a-utils/package.json',
     'resources/openclaw-plugins/a2a/node_modules/@a2anet/a2a-utils/dist/index.js',
-    'resources/resources/asr-models/Xenova/whisper-tiny/config.json',
-    'resources/resources/asr-models/Xenova/whisper-tiny/onnx/encoder_model_quantized.onnx',
     'resources/node_modules/@xenova/transformers/package.json',
     'resources/node_modules/onnxruntime-node/dist/binding.js',
   ];

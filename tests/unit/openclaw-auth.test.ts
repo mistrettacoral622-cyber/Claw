@@ -174,6 +174,63 @@ describe('syncProviderConfigToOpenClaw', () => {
   });
 });
 
+describe('setOpenClawDefaultModelWithOverride', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    await rm(testHome, { recursive: true, force: true });
+    await rm(testUserData, { recursive: true, force: true });
+  });
+
+  it('updates the default agent model when syncing the global default model', async () => {
+    await writeOpenClawJson({
+      agents: {
+        defaults: {
+          model: {
+            primary: 'deepseek/deepseek-v4-pro',
+            fallbacks: [],
+          },
+        },
+        list: [
+          {
+            id: 'main',
+            name: 'Main',
+            default: true,
+            workspace: '~/.openclaw/workspace',
+            agentDir: '~/.openclaw/agents/main/agent',
+            model: 'moonshot/kimi-k2.5',
+          },
+          {
+            id: 'secondary',
+            name: 'Secondary',
+            workspace: '~/.openclaw/workspace-secondary',
+            agentDir: '~/.openclaw/agents/secondary/agent',
+            model: 'moonshot/kimi-k2.5',
+          },
+        ],
+      },
+    });
+
+    const { setOpenClawDefaultModelWithOverride } = await import('@electron/utils/openclaw-auth');
+
+    await setOpenClawDefaultModelWithOverride('deepseek', 'deepseek/deepseek-v4-pro', {
+      baseUrl: 'https://api.deepseek.com',
+      api: 'openai-completions',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+    });
+
+    const config = await readOpenClawJson();
+    const agents = config.agents as {
+      defaults: { model: { primary: string; fallbacks: string[] } };
+      list: Array<{ id: string; model: string }>;
+    };
+
+    expect(agents.defaults.model.primary).toBe('deepseek/deepseek-v4-pro');
+    expect(agents.list.find((agent) => agent.id === 'main')?.model).toBe('deepseek/deepseek-v4-pro');
+    expect(agents.list.find((agent) => agent.id === 'secondary')?.model).toBe('moonshot/kimi-k2.5');
+  });
+});
+
 describe('A2A inbound OpenClaw config helpers', () => {
   beforeEach(async () => {
     vi.resetModules();

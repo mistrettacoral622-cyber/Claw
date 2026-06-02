@@ -17,6 +17,7 @@ describe('gateway command script', () => {
 
     expect(script).toContain('set "ELECTRON_RUN_AS_NODE=1"');
     expect(script).toContain('set "OPENCLAW_NODE_OPTIONS_READY=1"');
+    expect(script).toContain('set "OPENCLAW_DISABLE_BONJOUR=1"');
     expect(script).toContain('set "OPENCLAW_NO_RESPAWN=1"');
     expect(script).toContain('set "OPENCLAW_CONFIG_PATH=C:\\Users\\tester\\.openclaw\\openclaw.json"');
     expect(script).toContain('"C:\\Program Files\\KTClaw\\KTClaw.exe" "C:\\Program Files\\KTClaw\\resources\\openclaw\\openclaw.mjs" gateway --port 18789 --allow-unconfigured');

@@ -61,6 +61,29 @@ describe('provider-model-sync', () => {
     });
   });
 
+  it('uses the provider api protocol override for OpenAI-compatible accounts', () => {
+    const payload = buildNonOAuthAgentProviderUpdate(
+      providerConfig({
+        type: 'openai',
+        id: 'openai-local',
+        baseUrl: 'http://10.101.80.18:8888/v1',
+        apiProtocol: 'openai-completions',
+      }),
+      'openai-local',
+      'openai/Qwen3.5-9B',
+    );
+
+    expect(payload).toEqual({
+      providerKey: 'openai',
+      entry: {
+        baseUrl: 'http://10.101.80.18:8888/v1',
+        api: 'openai-completions',
+        apiKey: 'OPENAI_API_KEY',
+        models: [{ id: 'Qwen3.5-9B', name: 'Qwen3.5-9B' }],
+      },
+    });
+  });
+
   it('returns null for oauth and multi-instance providers', () => {
     expect(
       buildNonOAuthAgentProviderUpdate(

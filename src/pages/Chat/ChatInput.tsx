@@ -8,7 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, FolderOpen, Camera, Sparkles, Mic, MicOff } from 'lucide-react';
+import { SendHorizontal, Square, X, Paperclip, FileText, Film, Music, FileArchive, File, Loader2, FolderOpen, Camera, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -35,7 +35,6 @@ import {
 } from '@/lib/team-chat-access';
 import { CAMERA_REQUEST_ACCEPTED_UI_EVENT, type CameraRequestDetail } from '../../../shared/camera-request';
 import { getChatInputSlashMatches, isSlashCommandPrefixInput, parseChatInputSlashCommand } from './slash-commands';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { CameraCaptureModal } from './CameraCaptureModal';
 
 const CHAT_REQUEST_FILE_UPLOAD_EVENT = 'chat:request-file-upload';
@@ -128,9 +127,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const [, setFolderPopoverOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
-  // Microphone speech-to-text state
-  const micPrefixRef = useRef('');
-  const micSuffixRef = useRef('');
   const isComposingRef = useRef(false);
   const agents = useAgentsStore((s) => s.agents);
   const currentAgentId = useChatStore((s) => s.currentAgentId);
@@ -144,7 +140,7 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   );
   const defaultModel = useSettingsStore((s) => s.defaultModel);
   const currentAgentName = currentAgent?.name ?? 'KTClaw';
-  const currentModelDisplay = currentAgent?.modelDisplay ?? defaultModel ?? 'Not configured';
+  const currentModelDisplay = currentAgent?.modelDisplay || defaultModel || 'Not configured';
 
   // Model selector
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -199,84 +195,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
   const [cameraRequestedByAgent, setCameraRequestedByAgent] = useState(false);
   const [cameraRequestReason, setCameraRequestReason] = useState<string | undefined>(undefined);
   const [imagePromptError, setImagePromptError] = useState<string | null>(null);
-
-  // Speech recognition hook callbacks
-  const handleSpeechInterim = useCallback((interim: string) => {
-    const currentPrefix = micPrefixRef.current;
-    const currentSuffix = micSuffixRef.current;
-    setComposerDraft(currentPrefix + interim + currentSuffix);
-  }, [setComposerDraft]);
-
-  const handleSpeechResult = useCallback((transcript: string) => {
-    const currentPrefix = micPrefixRef.current;
-    const currentSuffix = micSuffixRef.current;
-    const separator = currentPrefix && !currentPrefix.endsWith(' ') ? ' ' : '';
-    const newValue = currentPrefix + separator + transcript + currentSuffix;
-    setComposerDraft(newValue);
-    // Restore focus and place cursor after inserted text
-    setTimeout(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        const newCursorPos = currentPrefix.length + separator.length + transcript.length;
-        ta.focus();
-        ta.setSelectionRange(newCursorPos, newCursorPos);
-      }
-    }, 50);
-  }, [setComposerDraft]);
-
-  const handleSpeechError = useCallback((error: string) => {
-    const errorMessages: Record<string, string> = {
-      'no-speech': '未检测到语音，请重试',
-      'aborted': '语音识别已取消',
-      'not-allowed': '未获得麦克风权限，请检查系统设置',
-      'audio-capture': '无法访问麦克风设备',
-      'audio-decode-not-supported': '当前环境无法解码录音音频',
-      'service-not-allowed': '本地语音识别服务不可用',
-      'bad-grammar': '语音识别语法错误',
-      'language-not-supported': '当前语言不支持语音识别',
-      'nomatch': '未识别到语音，请重试',
-      'permission-denied': '未获得麦克风权限，请检查系统设置',
-      'no-microphone': '未检测到麦克风设备',
-      'not-supported': '当前环境不支持语音识别',
-    };
-    const message = errorMessages[error] || `语音识别失败: ${error}`;
-    toast.error(message);
-  }, []);
-  const [isSpeechTranscribing, setIsSpeechTranscribing] = useState(false);
-
-  const {
-    isListening,
-    isSupported: isSpeechSupported,
-    isTranscribing,
-    start: startListening,
-    stop: stopListening,
-  } = useSpeechRecognition({
-    lang: 'zh-CN',
-    onInterim: handleSpeechInterim,
-    onResult: handleSpeechResult,
-    onTranscribingChange: setIsSpeechTranscribing,
-    onError: handleSpeechError,
-  });
-  const isSpeechBusy = isListening || isTranscribing || isSpeechTranscribing;
-
-  // Mic toggle handler
-  const handleMicToggle = useCallback(() => {
-    if (isListening) {
-      stopListening();
-    } else if (isSpeechBusy) {
-      return;
-    } else {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        micPrefixRef.current = composerDraft.slice(0, textarea.selectionStart);
-        micSuffixRef.current = composerDraft.slice(textarea.selectionStart);
-      } else {
-        micPrefixRef.current = composerDraft;
-        micSuffixRef.current = '';
-      }
-      startListening();
-    }
-  }, [isListening, isSpeechBusy, stopListening, startListening, composerDraft]);
 
   const activeSlashCommand = showSlashMenu
     ? (slashMatches[Math.min(slashActiveIndex, slashMatches.length - 1)] ?? null)
@@ -1002,26 +920,6 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
               <Camera className="h-4 w-4" />
             </Button>
 
-            {/* Microphone Button — local offline ASR */}
-            {isSpeechSupported ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className={cn(
-                  'h-[30px] w-[30px] shrink-0 rounded-full bg-transparent transition-colors',
-                  isSpeechBusy
-                    ? 'text-red-500 animate-mic-pulse hover:bg-red-50'
-                    : 'text-[#3c3c43] hover:bg-[#e5e5ea] hover:text-black',
-                )}
-                onClick={handleMicToggle}
-                disabled={disabled || sending || isSpeechTranscribing || isTranscribing}
-                title={isSpeechTranscribing || isTranscribing ? '正在识别' : (isListening ? '停止聆听' : '语音输入')}
-                aria-label={isSpeechTranscribing || isTranscribing ? '正在识别' : (isListening ? '停止聆听' : '语音输入')}
-              >
-                {isSpeechBusy ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </Button>
-            ) : null}
-
             <button
               type="button"
               className="flex shrink-0 items-center gap-1 rounded-full border border-black/10 bg-white px-2.5 py-1 text-[12px] text-[#3c3c43] shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:border-black/20 hover:bg-[#f9f9f9]"
@@ -1053,8 +951,8 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   isComposingRef.current = false;
                 }}
                 onPaste={handlePaste}
-                placeholder={isSpeechTranscribing || isTranscribing ? '正在识别...' : (isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息...`)}
-                aria-label={isSpeechTranscribing || isTranscribing ? '正在识别...' : (isListening ? '正在聆听...' : `给 ${currentAgentName ?? 'KTClaw'} 发消息`)}
+                placeholder={t('common:sendMessagePlaceholder', { name: currentAgentName ?? 'KTClaw' })}
+                aria-label={t('common:sendMessagePlaceholder', { name: currentAgentName ?? 'KTClaw' })}
                 disabled={disabled}
                 className="min-h-[22px] max-h-[200px] resize-none border-0 bg-transparent px-0 py-0 text-[14px] leading-[22px] text-black placeholder:text-[#8e8e93] shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:text-white"
                 rows={1}
@@ -1085,21 +983,25 @@ export function ChatInput({ onSend, onStop, disabled = false, sending = false, i
                   onSelect={async (model) => {
                     try {
                       if (currentAgent) {
+                        await updateAgent(currentAgent.id, { model });
                         const effectiveSessionKey = currentSessionKey || currentAgent.mainSessionKey;
                         if (effectiveSessionKey) {
-                          const result = await invokeIpc<{ success: boolean; error?: string }>(
-                            'gateway:rpc',
-                            'sessions.patch',
-                            {
-                              key: effectiveSessionKey,
-                              model: model || null,
-                            },
-                          );
-                          if (!result.success) {
-                            throw new Error(result.error || 'Failed to switch session model.');
+                          try {
+                            const result = await invokeIpc<{ success: boolean; error?: string }>(
+                              'gateway:rpc',
+                              'sessions.patch',
+                              {
+                                key: effectiveSessionKey,
+                                model: model || null,
+                              },
+                            );
+                            if (!result.success) {
+                              console.warn('[ChatInput] Failed to patch current session model:', result.error);
+                            }
+                          } catch (patchError) {
+                            console.warn('[ChatInput] Failed to patch current session model:', patchError);
                           }
                         }
-                        await updateAgent(currentAgent.id, { model });
                       }
                       setModelPickerOpen(false);
                     } catch (error) {

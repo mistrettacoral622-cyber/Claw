@@ -8,6 +8,8 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const UV_VERSION = '0.10.0';
 const BASE_URL = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}`;
 const OUTPUT_BASE = path.join(ROOT_DIR, 'resources', 'bin');
+const DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 1500;
 
 const TARGETS = {
   'darwin-arm64': {
@@ -51,8 +53,8 @@ export function getExtractionCommand({
   if (filename.endsWith('.zip')) {
     if (hostPlatform === 'win32') {
       const psCommand =
-        `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
-        `[System.IO.Compression.ZipFile]::ExtractToDirectory('${archivePath.replace(/'/g, "''")}', '${tempDir.replace(/'/g, "''")}', $true)`;
+        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' ` +
+        `-DestinationPath '${tempDir.replace(/'/g, "''")}' -Force`;
 
       return {
         command: 'powershell.exe',
@@ -88,6 +90,41 @@ export function extractArchive({
   execFileSync(command, args, { stdio: 'inherit' });
 }
 
+async function wait(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function downloadFileWithRetry(url, archivePath, attempts = DOWNLOAD_ATTEMPTS) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.statusText}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      await fs.writeFile(archivePath, Buffer.from(buffer));
+      return;
+    } catch (error) {
+      lastError = error;
+      await fs.remove(archivePath);
+
+      if (attempt === attempts) {
+        throw error;
+      }
+
+      echo(chalk.yellow(
+        `Download attempt ${attempt}/${attempts} failed, retrying in ${DOWNLOAD_RETRY_DELAY_MS}ms...`
+      ));
+      await wait(DOWNLOAD_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
+}
+
 async function setupTarget(id) {
   const target = TARGETS[id];
   if (!target) {
@@ -109,13 +146,7 @@ async function setupTarget(id) {
 
   try {
     echo(`Downloading: ${downloadUrl}`);
-    const response = await fetch(downloadUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to download: ${response.statusText}`);
-    }
-
-    const buffer = await response.arrayBuffer();
-    await fs.writeFile(archivePath, Buffer.from(buffer));
+    await downloadFileWithRetry(downloadUrl, archivePath);
 
     echo('Extracting...');
     extractArchive({
@@ -192,9 +223,19 @@ export async function main() {
   echo(chalk.green('\nDone!'));
 }
 
-const scriptPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+export function isMainInvocation(currentModulePath, argv = process.argv) {
+  const scriptPath = argv[1] ? path.resolve(argv[1]) : null;
+  if (scriptPath === currentModulePath) {
+    return true;
+  }
+
+  return argv
+    .slice(2)
+    .some((arg) => !arg.startsWith('-') && path.resolve(arg) === currentModulePath);
+}
+
 const currentModulePath = fileURLToPath(import.meta.url);
 
-if (scriptPath === currentModulePath) {
+if (isMainInvocation(currentModulePath)) {
   await main();
 }

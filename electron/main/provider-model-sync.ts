@@ -32,7 +32,7 @@ export function buildNonOAuthAgentProviderUpdate(
   const providerKey = getOpenClawProviderKeyForType(provider.type, providerId);
   const meta = getProviderConfig(provider.type);
   const baseUrl = provider.baseUrl || meta?.baseUrl;
-  const api = meta?.api;
+  const api = provider.apiProtocol || meta?.api;
   if (!baseUrl || !api) return null;
 
   const modelId = getModelIdFromRef(modelRef, providerKey);

@@ -20,6 +20,7 @@ extraResources:
       - "**/*"
       - "!icons/*.md"
       - "!icons/*.svg"
+      - "!asr-models/**"
       - "!bin/**"
       - "!screenshot/**"
   # OpenClaw package (node_modules copied separately by afterPack hook
@@ -84,7 +85,6 @@ mac:
   entitlementsInherit: entitlements.mac.plist
   notarize: true
   extendInfo:
-    NSMicrophoneUsageDescription: KTClaw requires microphone access for voice features
     NSCameraUsageDescription: KTClaw requires camera access for video features
 
 dmg:

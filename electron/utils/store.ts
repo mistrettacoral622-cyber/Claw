@@ -14,6 +14,17 @@ let settingsStoreInstance: any = null;
 export type UpdateChannel = 'stable' | 'beta' | 'dev';
 
 const UPDATE_CHANNELS = new Set<UpdateChannel>(['stable', 'beta', 'dev']);
+const LEGACY_STATIC_DEFAULT_MODELS = new Set([
+  'claude-sonnet-4-6',
+  'claude-opus-4-6',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gemini-3.1-pro-preview',
+  'gemini-2.0-flash',
+  'deepseek-chat',
+]);
 
 export function normalizeUpdateChannel(channel: unknown): UpdateChannel {
   if (typeof channel !== 'string') return 'stable';
@@ -80,6 +91,10 @@ export interface AppSettings {
   devModeUnlocked: boolean;
   setupComplete: boolean;
 
+  // Model defaults
+  defaultModel: string;
+  contextLimit: number;
+
   // Tool Permissions
   globalRiskLevel: 'standard' | 'strict' | 'permissive';
   fileAcl: boolean;
@@ -118,6 +133,15 @@ function getSystemLocale(): string {
     || (app && typeof app.getLocale === 'function' ? app.getLocale() : '')
     || Intl.DateTimeFormat().resolvedOptions().locale
     || 'en';
+}
+
+function normalizeDefaultModel(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  if (!normalized || LEGACY_STATIC_DEFAULT_MODELS.has(normalized)) {
+    return '';
+  }
+  return normalized;
 }
 
 function createDefaultSettings(): AppSettings {
@@ -164,6 +188,10 @@ function createDefaultSettings(): AppSettings {
     sidebarCollapsed: false,
     devModeUnlocked: false,
     setupComplete: false,
+
+    // Model defaults
+    defaultModel: '',
+    contextLimit: 32000,
 
     // Presets
     selectedBundles: ['productivity', 'developer'],
@@ -220,6 +248,13 @@ export async function getSetting<K extends keyof AppSettings>(key: K): Promise<A
     }
     return normalized as AppSettings[K];
   }
+  if (key === 'defaultModel') {
+    const normalized = normalizeDefaultModel(rawValue);
+    if (normalized !== rawValue) {
+      store.set('defaultModel', normalized);
+    }
+    return normalized as AppSettings[K];
+  }
   return rawValue;
 }
 
@@ -240,6 +275,10 @@ export async function setSetting<K extends keyof AppSettings>(
     store.set('updateChannelExplicit', Boolean(value));
     return;
   }
+  if (key === 'defaultModel') {
+    store.set('defaultModel', normalizeDefaultModel(value));
+    return;
+  }
   store.set(key, value);
 }
 
@@ -253,6 +292,11 @@ export async function getAllSettings(): Promise<AppSettings> {
   if (settings.updateChannel !== normalizedChannel) {
     store.set('updateChannel', normalizedChannel);
     settings.updateChannel = normalizedChannel;
+  }
+  const normalizedDefaultModel = normalizeDefaultModel(settings.defaultModel);
+  if (settings.defaultModel !== normalizedDefaultModel) {
+    store.set('defaultModel', normalizedDefaultModel);
+    settings.defaultModel = normalizedDefaultModel;
   }
   return settings;
 }

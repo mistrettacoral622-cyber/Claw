@@ -432,6 +432,7 @@ export async function setOpenClawDefaultModel(
     };
     agents.defaults = defaults;
     config.agents = agents;
+    syncDefaultAgentListModels(config, model);
 
     // Configure models.providers for providers that need explicit registration.
     const providerCfg = getProviderConfig(provider);
@@ -561,6 +562,26 @@ function extractFallbackModelIds(provider: string, fallbackModels: string[]): st
   return fallbackModels
     .filter((fallback) => fallback.startsWith(`${provider}/`))
     .map((fallback) => fallback.slice(provider.length + 1));
+}
+
+function syncDefaultAgentListModels(config: Record<string, unknown>, model: string): void {
+  const agents = (config.agents || {}) as Record<string, unknown>;
+  const list = Array.isArray(agents.list)
+    ? agents.list.filter((entry): entry is Record<string, unknown> =>
+      Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+  if (list.length === 0) {
+    config.agents = agents;
+    return;
+  }
+
+  const defaultAgents = list.filter((agent) => agent.default === true);
+  const targets = defaultAgents.length > 0 ? defaultAgents : [list[0]];
+  for (const agent of targets) {
+    agent.model = model;
+  }
+
+  config.agents = agents;
 }
 
 function ensurePluginEnabled(
@@ -1109,6 +1130,7 @@ export async function setOpenClawDefaultModelWithOverride(
     };
     agents.defaults = defaults;
     config.agents = agents;
+    syncDefaultAgentListModels(config, model);
 
     if (override.baseUrl && override.api) {
       upsertOpenClawProviderEntry(config, provider, {

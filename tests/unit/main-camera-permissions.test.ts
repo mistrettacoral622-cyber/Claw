@@ -20,31 +20,31 @@ describe('media permissions', () => {
     })).toBe(true);
   });
 
-  // Test 2: audio-only (new Phase 20 ASR microphone path)
-  it('allows audio-only media permission for the main window', () => {
+  // Test 2: audio-only is not needed now that local ASR has been removed.
+  it('rejects audio-only media permission for the main window', () => {
     expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: ['audio'],
-    })).toBe(true);
+    })).toBe(false);
   });
 
   // Test 2b: uppercase variant of audio-only
-  it('allows audio-only with uppercase mediaTypes (case-insensitive)', () => {
+  it('rejects audio-only with uppercase mediaTypes (case-insensitive)', () => {
     expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: ['AUDIO'],
-    })).toBe(true);
+    })).toBe(false);
   });
 
-  // Test 3: video+audio combined
-  it('allows video+audio combined media permission for the main window', () => {
+  // Test 3: video+audio combined is rejected because the app only needs still camera capture.
+  it('rejects video+audio combined media permission for the main window', () => {
     expect(shouldAllowMediaPermission({
       permission: 'media',
       isMainWindowWebContents: true,
       mediaTypes: ['video', 'audio'],
-    })).toBe(true);
+    })).toBe(false);
   });
 
   // Test 4: empty or missing mediaTypes

@@ -216,6 +216,31 @@ describe('provider-runtime-sync refresh strategy', () => {
     expect(gateway.rpc).not.toHaveBeenCalled();
   });
 
+  it('registers standard provider models in agent models.json when switching the default provider', async () => {
+    mocks.getProvider.mockResolvedValue(createProvider({
+      id: 'deepseek-account',
+      name: 'DeepSeek',
+      type: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+    }));
+    mocks.getProviderConfig.mockReturnValue({
+      api: 'openai-completions',
+      baseUrl: 'https://api.deepseek.com',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+    });
+    mocks.getApiKey.mockResolvedValue('sk-deepseek');
+
+    await syncDefaultProviderToRuntime('deepseek-account');
+
+    expect(mocks.updateAgentModelProvider).toHaveBeenCalledWith('deepseek', {
+      baseUrl: 'https://api.deepseek.com',
+      api: 'openai-completions',
+      apiKey: 'DEEPSEEK_API_KEY',
+      models: [{ id: 'deepseek-v4-pro', name: 'deepseek-v4-pro' }],
+    });
+  });
+
   it('skips refresh after switching default provider when gateway is stopped', async () => {
     const gateway = createGateway('stopped');
     await syncDefaultProviderToRuntime('moonshot', gateway as GatewayManager);
