@@ -176,6 +176,7 @@ const electronAPI = {
         'oauth:success',
         'oauth:error',
         'openclaw:cli-installed',
+        'intercom:desktop-camera-request',
       ];
 
       if (validChannels.includes(channel)) {

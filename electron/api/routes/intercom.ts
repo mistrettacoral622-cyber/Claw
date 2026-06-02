@@ -19,6 +19,14 @@ import {
   type IntercomSendInput,
   type IntercomUploadFilesInput,
 } from '../../services/intercom';
+import {
+  completeIntercomDesktopCameraRequest,
+  failIntercomDesktopCameraRequest,
+} from '../../services/intercom-desktop-camera';
+import type {
+  IntercomDesktopCameraCompleteInput,
+  IntercomDesktopCameraFailInput,
+} from '../../../shared/intercom-desktop-camera';
 
 function parseIntercomRouteId(pathname: string, suffix = ''): string | null {
   const prefix = '/api/intercom/routes/';
@@ -148,6 +156,36 @@ export async function handleIntercomRoutes(
       sendJson(res, 200, await sendIntercomTask(body));
     } catch (error) {
       sendIntercomCommandError(res, error);
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/desktop-camera/complete' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<IntercomDesktopCameraCompleteInput>(req);
+      assertString(body.requestId, 'requestId');
+      assertString(body.taskId, 'taskId');
+      assertString(body.artifactPath, 'artifactPath');
+      assertString(body.resultPath, 'resultPath');
+      assertString(body.base64, 'base64');
+      sendJson(res, 200, await completeIntercomDesktopCameraRequest(body));
+    } catch (error) {
+      sendJson(res, 400, { success: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/desktop-camera/fail' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<IntercomDesktopCameraFailInput>(req);
+      assertString(body.requestId, 'requestId');
+      assertString(body.taskId, 'taskId');
+      assertString(body.artifactPath, 'artifactPath');
+      assertString(body.resultPath, 'resultPath');
+      assertString(body.error, 'error');
+      sendJson(res, 200, await failIntercomDesktopCameraRequest(body));
+    } catch (error) {
+      sendJson(res, 400, { success: false, error: error instanceof Error ? error.message : String(error) });
     }
     return true;
   }

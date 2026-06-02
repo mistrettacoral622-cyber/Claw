@@ -527,7 +527,7 @@ describe('intercom service', () => {
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain("'agent' '--local' '--agent' 'ops'");
+    expect(sshArgs.at(-1)).toContain("'agent' '--local' '--to' 'agent:ops:intercom' '--agent' 'ops'");
   });
 
   it('retries legacy openclaw routes with the bundled Linux KTClaw command when the wrapper points at /usr/ktclaw', async () => {
@@ -698,6 +698,7 @@ describe('intercom service', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
     expect(retryArgs.at(-1)).toContain("'--session-id' 'intercom-text-");
+    expect(retryArgs.at(-1)).toContain("'--to' 'agent:ops:intercom-text-");
     expect(retryArgs.at(-1)).toContain("[from agent dev] 你好");
   });
 
@@ -745,7 +746,7 @@ describe('intercom service', () => {
       expect.any(Function),
     );
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("'agent' '--local' '--agent' 'ops'"),
+      expect.stringContaining("'agent' '--local' '--to' 'agent:ops:intercom' '--agent' 'ops'"),
       expect.any(Function),
     );
   });
@@ -806,8 +807,135 @@ describe('intercom service', () => {
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('remote_task');
     expect(sshArgs.at(-1)).toContain('"action": "inspect_file"');
+    expect(sshArgs.at(-1)).toContain("'--to' 'agent:ops:intercom-task-task-1'");
     expect(sshArgs.at(-1)).toContain("'--session-id' 'intercom-task-task-1'");
     expect(result.sessionId).toBe('intercom-task-task-1');
+  });
+
+  it('normalizes structured OpenClaw task output written to stderr', async () => {
+    const { normalizeIntercomRemoteTaskCommandResult } = await import('@electron/services/intercom');
+
+    const result = normalizeIntercomRemoteTaskCommandResult({
+      stdout: '',
+      stderr: JSON.stringify({
+        payloads: [
+          {
+            text: 'The uploaded file says hello.',
+            mediaUrl: null,
+          },
+        ],
+        meta: {
+          durationMs: 51364,
+        },
+      }),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      summary: 'The uploaded file says hello.',
+      artifacts: [],
+      error: null,
+    }));
+  });
+
+  it('runs screenshot tasks through the direct SSH capture path instead of an OpenClaw agent turn', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: JSON.stringify({
+        success: true,
+        summary: 'Screenshot captured.',
+        artifacts: [
+          { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png', name: 'screenshot.png', mimeType: 'image/png' },
+        ],
+        logs: 'Captured through SSH direct screenshot fast path.',
+        error: null,
+      }),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'screenshot',
+      payload: { outbox: '~/.ktclaw/intercom/outbox/task-1/', format: 'png' },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('gnome-screenshot');
+    expect(sshArgs.at(-1)).not.toContain('remote_task');
+    expect(sshArgs.at(-1)).not.toContain("'agent' '--local'");
+    expect(result.result).toEqual(expect.objectContaining({
+      summary: 'Screenshot captured.',
+      artifacts: [
+        expect.objectContaining({
+          type: 'image',
+          path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+        }),
+      ],
+    }));
+  });
+
+  it('asks the remote KTClaw desktop client to take camera photos before tool fallbacks', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: JSON.stringify({
+        success: true,
+        summary: 'Camera photo captured.',
+        artifacts: [
+          { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/camera.jpg', name: 'camera.jpg', mimeType: 'image/jpeg' },
+        ],
+        logs: 'Captured through KTClaw desktop camera UI.',
+        error: null,
+      }),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'camera',
+      payload: { outbox: '~/.ktclaw/intercom/outbox/task-1/', format: 'jpg' },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('desktop-camera-requests');
+    expect(sshArgs.at(-1)).not.toContain('ffmpeg');
+    expect(sshArgs.at(-1)).not.toContain('remote_task');
+    expect(result.result).toEqual(expect.objectContaining({
+      summary: 'Camera photo captured.',
+      artifacts: [
+        expect.objectContaining({
+          type: 'image',
+          path: '~/.ktclaw/intercom/outbox/task-1/camera.jpg',
+        }),
+      ],
+    }));
   });
 
   it('falls back to assistant text when a remote task returns ordinary OpenClaw messages', async () => {
@@ -1185,6 +1313,8 @@ describe('intercom service', () => {
       [
         '/repo/node_modules/openclaw/openclaw.mjs',
         'agent',
+        '--to',
+        'agent:dev:intercom',
         '--agent',
         'dev',
         '--session-id',

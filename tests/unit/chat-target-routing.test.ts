@@ -104,7 +104,15 @@ describe('chat target routing', () => {
     });
 
     hostApiFetchMock.mockReset();
-    hostApiFetchMock.mockResolvedValue({ success: true, result: { runId: 'run-media' } });
+    hostApiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/sessions/recovered-history')) {
+        return { messages: [] };
+      }
+      if (path === '/api/chat/send-with-media') {
+        return { success: true, result: { runId: 'run-media' } };
+      }
+      throw new Error(`Unexpected host API call: ${path}`);
+    });
   });
 
   afterEach(() => {
@@ -210,8 +218,10 @@ describe('chat target routing', () => {
       }),
     );
 
+    const mediaCall = hostApiFetchMock.mock.calls.find(([path]) => path === '/api/chat/send-with-media');
+    expect(mediaCall).toBeTruthy();
     const payload = JSON.parse(
-      (hostApiFetchMock.mock.calls[0]?.[1] as { body: string }).body,
+      (mediaCall?.[1] as { body: string }).body,
     ) as {
       sessionKey: string;
       message: string;
@@ -229,9 +239,17 @@ describe('chat target routing', () => {
   it('maps image capability failures to a friendly Chinese message', async () => {
     const { useChatStore } = await import('@/stores/chat');
 
-    hostApiFetchMock.mockResolvedValueOnce({
-      success: false,
-      error: 'This model does not support image_url inputs',
+    hostApiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/sessions/recovered-history')) {
+        return { messages: [] };
+      }
+      if (path === '/api/chat/send-with-media') {
+        return {
+          success: false,
+          error: 'This model does not support image_url inputs',
+        };
+      }
+      throw new Error(`Unexpected host API call: ${path}`);
     });
 
     useChatStore.setState({
@@ -276,9 +294,17 @@ describe('chat target routing', () => {
   it('maps image network failures to an actionable Chinese message', async () => {
     const { useChatStore } = await import('@/stores/chat');
 
-    hostApiFetchMock.mockResolvedValueOnce({
-      success: false,
-      error: 'LLM request failed: network connection error.',
+    hostApiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/sessions/recovered-history')) {
+        return { messages: [] };
+      }
+      if (path === '/api/chat/send-with-media') {
+        return {
+          success: false,
+          error: 'LLM request failed: network connection error.',
+        };
+      }
+      throw new Error(`Unexpected host API call: ${path}`);
     });
 
     useChatStore.setState({
@@ -400,7 +426,7 @@ describe('chat target routing', () => {
       '/tmp/workspace-media',
     );
 
-    expect(hostApiFetchMock).not.toHaveBeenCalled();
+    expect(hostApiFetchMock.mock.calls.some(([path]) => path === '/api/chat/send-with-media')).toBe(false);
     const state = useChatStore.getState();
     expect(state.sending).toBe(false);
     expect(state.error).toBeNull();

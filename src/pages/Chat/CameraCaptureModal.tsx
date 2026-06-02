@@ -15,6 +15,10 @@ export interface CameraCaptureModalProps {
   open: boolean;
   requestedByAgent?: boolean;
   requestReason?: string;
+  titleOverride?: string;
+  primaryActionLabel?: string;
+  secondaryActionLabel?: string;
+  showSecondaryAction?: boolean;
   onClose: () => void;
   onFallbackToFileUpload?: () => void;
   onAttachPhoto: (file: File) => Promise<void>;
@@ -29,6 +33,10 @@ export function CameraCaptureModal({
   open,
   requestedByAgent = false,
   requestReason,
+  titleOverride,
+  primaryActionLabel,
+  secondaryActionLabel,
+  showSecondaryAction = true,
   onClose,
   onFallbackToFileUpload,
   onAttachPhoto,
@@ -177,8 +185,9 @@ export function CameraCaptureModal({
   }, [capturedFile, closeModal, onAttachPhoto, onIdentifyPhoto]);
 
   const title = useMemo(() => (
+    titleOverride || (
     requestedByAgent ? 'Agent 请求你拍一张照片' : '拍照'
-  ), [requestedByAgent]);
+  )), [requestedByAgent, titleOverride]);
 
   if (!open) {
     return null;
@@ -254,12 +263,26 @@ export function CameraCaptureModal({
                 ) : null}
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                <Button type="button" className="rounded-full px-4" onClick={() => void submitCapturedFile('identify')} disabled={busy}>
+                {primaryActionLabel ? (
+                  <Button type="button" className="rounded-full px-4" onClick={() => void submitCapturedFile('identify')} disabled={busy}>
+                    {primaryActionLabel}
+                  </Button>
+                ) : (
+                  <Button type="button" className="rounded-full px-4" onClick={() => void submitCapturedFile('identify')} disabled={busy}>
                   拍照并识别
                 </Button>
-                <Button type="button" variant="ghost" className="rounded-full border border-black/10 px-4" onClick={() => void submitCapturedFile('attach')} disabled={busy}>
+                )}
+                {showSecondaryAction ? (
+                  secondaryActionLabel ? (
+                    <Button type="button" variant="ghost" className="rounded-full border border-black/10 px-4" onClick={() => void submitCapturedFile('attach')} disabled={busy}>
+                      {secondaryActionLabel}
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="ghost" className="rounded-full border border-black/10 px-4" onClick={() => void submitCapturedFile('attach')} disabled={busy}>
                   附加照片
-                </Button>
+                    </Button>
+                  )
+                ) : null}
                 <Button
                   type="button"
                   variant="ghost"

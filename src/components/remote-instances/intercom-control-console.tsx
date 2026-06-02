@@ -8,6 +8,7 @@ import {
   FileText,
   Loader2,
   MessageSquareText,
+  Monitor,
   Paperclip,
   Plus,
   RefreshCcw,
@@ -518,7 +519,7 @@ export function IntercomControlConsole() {
     }
   };
 
-  const handleSendTask = async (options?: { screenshot?: boolean }) => {
+  const handleSendTask = async (options?: { screenshot?: boolean; camera?: boolean }) => {
     if (!selectedRoute) {
       toast.error(t('remoteInstances.intercom.routeNeedsSave'));
       return;
@@ -529,8 +530,10 @@ export function IntercomControlConsole() {
     const taskId = makeTaskId(routeId);
     const taskText = options?.screenshot
       ? t('remoteInstances.intercom.screenshotTaskPrompt')
+      : options?.camera
+        ? t('remoteInstances.intercom.cameraTaskPrompt')
       : messageDraft.message.trim();
-    if (!taskText && stagedFiles.length === 0 && !options?.screenshot) {
+    if (!taskText && stagedFiles.length === 0 && !options?.screenshot && !options?.camera) {
       return;
     }
 
@@ -577,9 +580,11 @@ export function IntercomControlConsole() {
       }
 
       const outbox = `~/.ktclaw/intercom/outbox/${taskId}/`;
-      const action = options?.screenshot ? 'screenshot' : 'remote_task';
+      const action = options?.screenshot ? 'screenshot' : options?.camera ? 'camera' : 'remote_task';
       const payload = options?.screenshot
         ? { outbox, format: 'png' }
+        : options?.camera
+          ? { outbox, format: 'jpg', reason: taskText }
         : {
             instruction: taskText,
             inboxFiles: uploadedTransfers.map((transfer) => ({
@@ -1027,8 +1032,19 @@ export function IntercomControlConsole() {
                   onClick={() => void handleSendTask({ screenshot: true })}
                   disabled={!selectedRoute || sending}
                 >
-                  <Camera className="h-4 w-4" />
+                  <Monitor className="h-4 w-4" />
                   {t('remoteInstances.intercom.screenshot')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => void handleSendTask({ camera: true })}
+                  disabled={!selectedRoute || sending}
+                >
+                  <Camera className="h-4 w-4" />
+                  {t('remoteInstances.intercom.camera')}
                 </Button>
               </div>
 

@@ -27,6 +27,7 @@ import { useSettingsStore } from './stores/settings';
 import { useGatewayStore } from './stores/gateway';
 import { wireGatewayNotifications } from './stores/notifications';
 import { isBrowserPreviewMode } from './lib/browser-preview';
+import { IntercomDesktopCameraBridge } from './components/remote-instances/intercom-desktop-camera-bridge';
 
 
 /**
@@ -235,6 +236,7 @@ function App() {
         </Suspense>
 
         {/* Global toast notifications */}
+        <IntercomDesktopCameraBridge />
         <AppToaster />
       </TooltipProvider>
     </ErrorBoundary>

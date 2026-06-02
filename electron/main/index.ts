@@ -56,6 +56,8 @@ import { loadMcpConfig } from '../api/routes/mcp';
 import { resolveWindowChromeOptions } from './window-chrome';
 import { createInitialWindowPresenter } from './initial-window-presenter';
 import { createStartupSmokeController } from './startup-smoke';
+import { startIntercomDesktopCameraRequestWatcher } from '../services/intercom-desktop-camera';
+import { INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL } from '../../shared/intercom-desktop-camera';
 
 // Disable GPU hardware acceleration globally for maximum stability across
 // all GPU configurations (no GPU, integrated, discrete).
@@ -151,6 +153,7 @@ let sessionRuntimeManager!: SessionRuntimeManager;
 let hostApiServer: Server | null = null;
 const hostApiSessionToken = randomBytes(24).toString('hex');
 const mainWindowFocusState = createMainWindowFocusState();
+let intercomDesktopCameraWatcherStop: (() => void) | null = null;
 const quitLifecycleState = createQuitLifecycleState();
 const startupSmokeController = createStartupSmokeController({
   enabled: STARTUP_SMOKE_ENABLED,
@@ -612,6 +615,16 @@ async function initialize(): Promise<void> {
     sendDesktopNotification('Sync failed', payload.message || 'A sync operation failed.');
   });
 
+  intercomDesktopCameraWatcherStop?.();
+  intercomDesktopCameraWatcherStop = startIntercomDesktopCameraRequestWatcher((request) => {
+    if (window.isDestroyed()) {
+      return;
+    }
+    focusWindow(window);
+    window.webContents.send(INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL, request);
+    hostEventBus.emit(INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL, request);
+  });
+
   loadWindowContents(window);
 
   const enabledMcpServers = loadMcpConfig().servers.filter((server) => server.enabled);
@@ -834,6 +847,8 @@ if (gotTheLock) {
   process.once('SIGTERM', () => requestQuitOnSignal('SIGTERM'));
 
   app.on('will-quit', () => {
+    intercomDesktopCameraWatcherStop?.();
+    intercomDesktopCameraWatcherStop = null;
     releaseProcessInstanceFileLock();
   });
 
@@ -971,6 +986,8 @@ if (gotTheLock) {
       return;
     }
 
+    intercomDesktopCameraWatcherStop?.();
+    intercomDesktopCameraWatcherStop = null;
     hostEventBus.closeAll();
     hostApiServer?.close();
 

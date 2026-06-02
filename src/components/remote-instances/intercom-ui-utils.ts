@@ -95,8 +95,9 @@ export function buildSshPreview(route: IntercomRouteDraft, message: string, send
   const session = route.sessionId.trim() || DEFAULT_INTERCOM_SESSION_ID;
   const text = message.trim() || '<message>';
   const from = sender.trim() || '<sender>';
+  const sessionKey = agent === '<agent>' ? '<session-key>' : `agent:${agent}:${session}`;
 
-  return `ssh ${host} "${command} agent --agent ${agent} --session-id ${session} --message '[from agent ${from}] ${text}' --json"`;
+  return `ssh ${host} "${command} agent --to ${sessionKey} --agent ${agent} --session-id ${session} --message '[from agent ${from}] ${text}' --json"`;
 }
 
 function readShareString(value: unknown): string {

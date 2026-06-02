@@ -226,6 +226,8 @@ const ROUTE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const INTERCOM_PROTOCOL_MARKER = 'KTClaw Intercom Protocol';
 const SSH_CONNECT_TIMEOUT_SECONDS = 10;
 const INTERCOM_COMMAND_TIMEOUT_MS = 300_000;
+const INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS = 120_000;
+const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
@@ -1410,12 +1412,37 @@ export function normalizeIntercomRemoteTaskResult(stdout: string): IntercomRemot
   };
 }
 
+function hasMeaningfulRemoteTaskResult(result: IntercomRemoteTaskResult): boolean {
+  return Boolean(
+    result.summary.trim()
+    || result.error
+    || result.artifacts.length > 0
+    || normalizeIntercomOutput(result.logs).includes('"payloads"')
+    || normalizeIntercomOutput(result.logs).includes('"messages"'),
+  );
+}
+
+export function normalizeIntercomRemoteTaskCommandResult(output: { stdout: string; stderr: string }): IntercomRemoteTaskResult {
+  const stdoutResult = normalizeIntercomRemoteTaskResult(output.stdout);
+  if (hasMeaningfulRemoteTaskResult(stdoutResult)) {
+    return stdoutResult;
+  }
+  const stderr = normalizeIntercomOutput(output.stderr);
+  if (!stderr || !/^[{[]|"(?:success|summary|artifacts|payloads|messages|text)"\s*:/.test(stderr)) {
+    return stdoutResult;
+  }
+  const stderrResult = normalizeIntercomRemoteTaskResult(stderr);
+  return hasMeaningfulRemoteTaskResult(stderrResult) ? stderrResult : stdoutResult;
+}
+
 function buildLocalCommand(route: IntercomRoute, message: string, sessionId: string) {
   return {
     command: process.execPath,
     args: [
       getOpenClawEntryPath(),
       'agent',
+      '--to',
+      buildIntercomSessionKey(route, sessionId),
       '--agent',
       route.agent,
       '--session-id',
@@ -1452,6 +1479,8 @@ function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: st
   const remoteArgs = [
     'agent',
     '--local',
+    '--to',
+    buildIntercomSessionKey(route, sessionId),
     '--agent',
     route.agent,
     '--session-id',
@@ -1505,6 +1534,8 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
   const remoteArgs = [
     'agent',
     '--local',
+    '--to',
+    buildIntercomSessionKey(route, sessionId),
     '--agent',
     route.agent,
     '--session-id',
@@ -1537,6 +1568,258 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     'foreach ($entry in $electronEntries) { if ((Test-Path -LiteralPath $entry.Exe) -and (Test-Path -LiteralPath $entry.Mjs)) { $env:ELECTRON_RUN_AS_NODE = "1"; & $entry.Exe $entry.Mjs @openclawArgs; exit $LASTEXITCODE } }',
     'Write-Error "KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path."',
     'exit 127',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
+function normalizeDirectTaskAction(action: string): 'screenshot' | 'camera' | null {
+  const normalized = action.trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if (normalized === 'screenshot' || normalized === 'screen_capture' || normalized === 'capture_screen') {
+    return 'screenshot';
+  }
+  if (normalized === 'camera' || normalized === 'photo' || normalized === 'take_photo' || normalized === 'camera_photo') {
+    return 'camera';
+  }
+  return null;
+}
+
+function readTaskPayloadString(task: IntercomRemoteTaskRequest, key: string): string {
+  const value = task.payload[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function normalizeOutboxPath(value: string, taskId: string): string {
+  const fallback = `${INTERCOM_REMOTE_BASE_DIR}/outbox/${safeRemotePathPart(taskId, 'task')}/`;
+  const normalized = normalizeRemotePath(value || fallback).replace(/\/+$/, '');
+  return normalized || fallback.replace(/\/+$/, '');
+}
+
+function joinRemotePath(dir: string, fileName: string): string {
+  return `${normalizeRemotePath(dir).replace(/\/+$/, '')}/${safeRemotePathPart(fileName, 'artifact')}`;
+}
+
+function remoteShellPath(value: string): string {
+  const normalized = normalizeRemotePath(value);
+  return normalized.startsWith('~/') ? `$HOME/${normalized.slice(2)}` : normalized;
+}
+
+function remotePowerShellHomePath(value: string): string {
+  const normalized = normalizeRemotePath(value);
+  if (normalized.startsWith('~/')) {
+    return `$HOME/${normalized.slice(2).replace(/\//g, '\\')}`;
+  }
+  return normalized.replace(/\//g, '\\');
+}
+
+function buildDirectTaskResultJson(result: IntercomRemoteTaskResult): string {
+  return JSON.stringify(result);
+}
+
+function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
+  requestId: string;
+  taskId: string;
+  artifactPath: string;
+  resultPath: string;
+  requestJson: string;
+} {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const format = readTaskPayloadString(task, 'format').toLowerCase() === 'png' ? 'png' : 'jpg';
+  const artifactPath = joinRemotePath(outbox, `camera.${format}`);
+  const resultPath = joinRemotePath(outbox, 'desktop-camera-result.json');
+  const requestId = `camera-${safeRemotePathPart(task.taskId, 'task')}-${randomUUID().slice(0, 8)}`;
+  const reason = readTaskPayloadString(task, 'reason') || readTaskPayloadString(task, 'instruction');
+  return {
+    requestId,
+    taskId: task.taskId,
+    artifactPath,
+    resultPath,
+    requestJson: JSON.stringify({
+      requestId,
+      taskId: task.taskId,
+      artifactPath,
+      resultPath,
+      reason,
+      requestedAt: Date.now(),
+    }),
+  };
+}
+
+function buildPosixDesktopCameraCommand(task: IntercomRemoteTaskRequest): string {
+  const request = buildDesktopCameraRequest(task);
+  const requestDir = remoteShellPath(`${INTERCOM_REMOTE_BASE_DIR}/desktop-camera-requests`);
+  const resultPath = remoteShellPath(request.resultPath);
+  const script = [
+    'set -eu',
+    `request_dir=${quotePosix(requestDir)}`,
+    `result_path=${quotePosix(resultPath)}`,
+    'mkdir -p "$request_dir" "${result_path%/*}"',
+    'rm -f "$result_path"',
+    `printf %s ${quotePosix(request.requestJson)} > "$request_dir/${safeRemotePathPart(request.requestId, 'request')}.json"`,
+    `i=0; while [ "$i" -lt ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS} ]; do if [ -f "$result_path" ]; then cat "$result_path"; exit 0; fi; sleep 1; i=$((i+1)); done`,
+    `echo "KTClaw desktop camera UI did not respond within ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}s" >&2`,
+    'exit 86',
+  ].join('; ');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildWindowsDesktopCameraCommand(task: IntercomRemoteTaskRequest): string {
+  const request = buildDesktopCameraRequest(task);
+  const requestJsonBase64 = Buffer.from(request.requestJson, 'utf8').toString('base64');
+  const requestFileName = `${safeRemotePathPart(request.requestId, 'request')}.json`;
+  const resultPath = remotePowerShellHomePath(request.resultPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$requestDir = Join-Path $HOME '.ktclaw\\intercom\\desktop-camera-requests'",
+    `$resultPath = ${JSON.stringify(resultPath)}`,
+    'New-Item -ItemType Directory -Force -Path $requestDir | Out-Null',
+    'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resultPath) | Out-Null',
+    'Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue',
+    `$requestJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${requestJsonBase64}'))`,
+    `[IO.File]::WriteAllText((Join-Path $requestDir ${JSON.stringify(requestFileName)}), $requestJson, [Text.Encoding]::UTF8)`,
+    `for ($i = 0; $i -lt ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}; $i++) { if (Test-Path -LiteralPath $resultPath) { Get-Content -LiteralPath $resultPath -Raw; exit 0 }; Start-Sleep -Seconds 1 }`,
+    `Write-Error "KTClaw desktop camera UI did not respond within ${INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS}s"`,
+    'exit 86',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
+function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const artifactPath = joinRemotePath(outbox, 'screenshot.png');
+  const artifactShellPath = remoteShellPath(artifactPath);
+  const successJson = buildDirectTaskResultJson({
+    success: true,
+    summary: 'Screenshot captured.',
+    artifacts: [{ type: 'image', path: artifactPath, name: 'screenshot.png', mimeType: 'image/png' }],
+    logs: 'Captured through SSH direct screenshot fast path.',
+    error: null,
+  });
+  const failureJson = buildDirectTaskResultJson({
+    success: false,
+    summary: '',
+    artifacts: [],
+    logs: 'No supported screenshot utility was found on the remote machine.',
+    error: 'No supported screenshot utility was found. Install gnome-screenshot, grim, scrot, ImageMagick import, or use the KTClaw desktop client.',
+  });
+  const script = [
+    'set -eu',
+    `artifact=${quotePosix(artifactShellPath)}`,
+    'mkdir -p "${artifact%/*}"',
+    'if command -v screencapture >/dev/null 2>&1; then screencapture -x "$artifact";',
+    'elif command -v gnome-screenshot >/dev/null 2>&1; then gnome-screenshot -f "$artifact";',
+    'elif command -v grim >/dev/null 2>&1; then grim "$artifact";',
+    'elif command -v scrot >/dev/null 2>&1; then scrot "$artifact";',
+    'elif command -v import >/dev/null 2>&1; then import -window root "$artifact";',
+    `else printf '%s\\n' ${quotePosix(failureJson)}; exit 0; fi`,
+    `if [ -f "$artifact" ]; then printf '%s\\n' ${quotePosix(successJson)}; else printf '%s\\n' ${quotePosix(failureJson)}; fi`,
+  ].join(' ');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildPosixCameraToolCommand(task: IntercomRemoteTaskRequest): string {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const format = readTaskPayloadString(task, 'format').toLowerCase() === 'png' ? 'png' : 'jpg';
+  const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+  const artifactPath = joinRemotePath(outbox, `camera.${format}`);
+  const artifactShellPath = remoteShellPath(artifactPath);
+  const successJson = buildDirectTaskResultJson({
+    success: true,
+    summary: 'Camera photo captured.',
+    artifacts: [{ type: 'image', path: artifactPath, name: `camera.${format}`, mimeType }],
+    logs: 'Captured through SSH direct camera tool fallback.',
+    error: null,
+  });
+  const failureJson = buildDirectTaskResultJson({
+    success: false,
+    summary: '',
+    artifacts: [],
+    logs: 'KTClaw desktop camera UI did not respond and no supported camera utility was found.',
+    error: 'No supported camera utility was found. Install imagesnap, fswebcam, or ffmpeg, or keep the KTClaw desktop client open.',
+  });
+  const script = [
+    'set -eu',
+    `artifact=${quotePosix(artifactShellPath)}`,
+    'mkdir -p "${artifact%/*}"',
+    'if command -v imagesnap >/dev/null 2>&1; then imagesnap "$artifact" >/dev/null;',
+    'elif command -v fswebcam >/dev/null 2>&1; then fswebcam --no-banner "$artifact" >/dev/null;',
+    'elif command -v ffmpeg >/dev/null 2>&1; then if [ "$(uname -s)" = "Darwin" ]; then ffmpeg -hide_banner -loglevel error -f avfoundation -i "0" -frames:v 1 -y "$artifact"; else ffmpeg -hide_banner -loglevel error -f v4l2 -i "${KTCLAW_CAMERA_DEVICE:-/dev/video0}" -frames:v 1 -y "$artifact"; fi;',
+    `else printf '%s\\n' ${quotePosix(failureJson)}; exit 0; fi`,
+    `if [ -f "$artifact" ]; then printf '%s\\n' ${quotePosix(successJson)}; else printf '%s\\n' ${quotePosix(failureJson)}; fi`,
+  ].join(' ');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildWindowsScreenshotCommand(task: IntercomRemoteTaskRequest): string {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const artifactPath = joinRemotePath(outbox, 'screenshot.png');
+  const artifactPowerShellPath = remotePowerShellHomePath(artifactPath);
+  const successJson = buildDirectTaskResultJson({
+    success: true,
+    summary: 'Screenshot captured.',
+    artifacts: [{ type: 'image', path: artifactPath, name: 'screenshot.png', mimeType: 'image/png' }],
+    logs: 'Captured through Windows desktop screenshot fast path.',
+    error: null,
+  });
+  const failureJson = buildDirectTaskResultJson({
+    success: false,
+    summary: '',
+    artifacts: [],
+    logs: 'Windows screenshot capture failed. SSH sessions may not have access to the interactive desktop.',
+    error: 'Windows screenshot capture failed. Keep KTClaw desktop open or run the task in an interactive desktop session.',
+  });
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$artifact = ${JSON.stringify(artifactPowerShellPath)}`,
+    'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $artifact) | Out-Null',
+    'try {',
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    '$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+    '$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height',
+    '$graphics = [System.Drawing.Graphics]::FromImage($bitmap)',
+    '$graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)',
+    '$bitmap.Save($artifact, [System.Drawing.Imaging.ImageFormat]::Png)',
+    '$graphics.Dispose(); $bitmap.Dispose()',
+    `if (Test-Path -LiteralPath $artifact) { ${JSON.stringify(successJson)} } else { ${JSON.stringify(failureJson)} }`,
+    '} catch {',
+    `${JSON.stringify(failureJson)}`,
+    '}',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
+function buildWindowsCameraToolCommand(task: IntercomRemoteTaskRequest): string {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const format = readTaskPayloadString(task, 'format').toLowerCase() === 'png' ? 'png' : 'jpg';
+  const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+  const artifactPath = joinRemotePath(outbox, `camera.${format}`);
+  const artifactPowerShellPath = remotePowerShellHomePath(artifactPath);
+  const successJson = buildDirectTaskResultJson({
+    success: true,
+    summary: 'Camera photo captured.',
+    artifacts: [{ type: 'image', path: artifactPath, name: `camera.${format}`, mimeType }],
+    logs: 'Captured through Windows ffmpeg camera fallback.',
+    error: null,
+  });
+  const failureJson = buildDirectTaskResultJson({
+    success: false,
+    summary: '',
+    artifacts: [],
+    logs: 'KTClaw desktop camera UI did not respond and ffmpeg camera capture was unavailable.',
+    error: 'No supported Windows camera fallback was found. Install ffmpeg or keep the KTClaw desktop client open.',
+  });
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$artifact = ${JSON.stringify(artifactPowerShellPath)}`,
+    'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $artifact) | Out-Null',
+    '$ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue',
+    `if (-not $ffmpeg) { ${JSON.stringify(failureJson)}; exit 0 }`,
+    '$devices = & $ffmpeg.Source -hide_banner -list_devices true -f dshow -i dummy 2>&1 | Out-String',
+    `$match = [regex]::Match($devices, '"([^"]+)"\\s+\\(video\\)')`,
+    `if (-not $match.Success) { ${JSON.stringify(failureJson)}; exit 0 }`,
+    '$device = $match.Groups[1].Value',
+    '& $ffmpeg.Source -hide_banner -loglevel error -f dshow -i "video=$device" -frames:v 1 -y $artifact',
+    `if (Test-Path -LiteralPath $artifact) { ${JSON.stringify(successJson)} } else { ${JSON.stringify(failureJson)} }`,
   ].join('; ');
   return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
 }
@@ -1612,6 +1895,12 @@ function buildCleanIntercomSessionId(sessionId: string): string {
 function buildTaskIntercomSessionId(sessionId: string, taskId: string): string {
   const base = safeRemotePathPart(normalizeString(sessionId) || DEFAULT_SESSION_ID, DEFAULT_SESSION_ID);
   return `${base}-task-${safeRemotePathPart(taskId, 'task')}`;
+}
+
+function buildIntercomSessionKey(route: IntercomRoute, sessionId: string): string {
+  const agent = safeRemotePathPart(route.agent || 'main', 'main');
+  const session = safeRemotePathPart(normalizeString(sessionId) || DEFAULT_SESSION_ID, DEFAULT_SESSION_ID);
+  return `agent:${agent}:${session}`;
 }
 
 async function resolveIntercomTarget(target: string): Promise<{
@@ -1757,6 +2046,31 @@ function buildSshCommand(
   };
 }
 
+function buildRawSshCommand(route: IntercomRoute, remoteCommand: string) {
+  const resolved = resolveSshHostAndUsername(route);
+  const host = resolved.username ? `${resolved.username}@${resolved.host}` : resolved.host;
+  return {
+    command: 'ssh',
+    args: [
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}`,
+      '-o',
+      'ConnectionAttempts=1',
+      '-o',
+      'NumberOfPasswordPrompts=0',
+      ...(route.sshPort ? ['-p', String(route.sshPort)] : []),
+      host,
+      remoteCommand,
+    ],
+    cwd: undefined,
+    env: process.env,
+  };
+}
+
 async function createSsh2Client(): Promise<Ssh2Client> {
   try {
     const ssh2 = await import('ssh2');
@@ -1769,20 +2083,16 @@ async function createSsh2Client(): Promise<Ssh2Client> {
   }
 }
 
-async function runSsh2Command(
+async function runSsh2RawCommand(
   route: IntercomRoute,
   password: string,
-  message: string,
-  sessionId: string,
-  options: { windowsAuto?: boolean } = {},
+  remoteCommand: string,
+  timeoutMs = INTERCOM_COMMAND_TIMEOUT_MS,
 ) {
   const startedAt = Date.now();
   const client = await createSsh2Client();
   const resolved = resolveSshHostAndUsername(route);
   const username = resolved.username || userInfo().username;
-  const remoteCommand = options.windowsAuto
-    ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
-    : buildRemoteCommand(route, message, sessionId);
   const connectionConfig: ConnectConfig = {
     host: resolved.host,
     port: route.sshPort ?? 22,
@@ -1816,7 +2126,7 @@ async function runSsh2Command(
     });
     const timeout = setTimeout(() => {
       const result = buildResult();
-      const message = `Intercom SSH command timed out after ${Math.round(INTERCOM_COMMAND_TIMEOUT_MS / 1000)}s`;
+      const message = `Intercom SSH command timed out after ${Math.round(timeoutMs / 1000)}s`;
       const error = new Error(`${message}. Check whether the remote OpenClaw command exits.`);
       Object.assign(error, {
         ...result,
@@ -1827,7 +2137,7 @@ async function runSsh2Command(
         durationMs: result.durationMs,
       });
       finish(() => reject(error));
-    }, INTERCOM_COMMAND_TIMEOUT_MS);
+    }, timeoutMs);
 
     client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, done) => {
       done(prompts.map(() => password));
@@ -1883,6 +2193,109 @@ async function runSsh2Command(
     });
     client.connect(connectionConfig);
   });
+}
+
+async function runSsh2Command(
+  route: IntercomRoute,
+  password: string,
+  message: string,
+  sessionId: string,
+  options: { windowsAuto?: boolean } = {},
+) {
+  const remoteCommand = options.windowsAuto
+    ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
+    : buildRemoteCommand(route, message, sessionId);
+  return runSsh2RawCommand(route, password, remoteCommand);
+}
+
+function getIntercomErrorExitCode(error: unknown): number | null {
+  if (error && typeof error === 'object' && typeof (error as { exitCode?: unknown }).exitCode === 'number') {
+    return (error as { exitCode: number }).exitCode;
+  }
+  return null;
+}
+
+function isDesktopCameraUnavailable(error: unknown): boolean {
+  return getIntercomErrorExitCode(error) === 86
+    || getIntercomErrorText(error).includes('KTClaw desktop camera UI did not respond');
+}
+
+async function runRawIntercomRemoteCommand(
+  route: IntercomRoute,
+  remoteCommand: string,
+  timeoutMs = INTERCOM_COMMAND_TIMEOUT_MS,
+): Promise<{
+  invocation: { command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv };
+  commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
+}> {
+  const sshPassword = route.transport === 'ssh' ? await getIntercomSshPassword(route.id) : null;
+  if (route.transport === 'ssh' && sshPassword) {
+    const resolved = resolveSshHostAndUsername(route);
+    const invocation = {
+      command: 'ssh2',
+      args: [`${resolved.username || userInfo().username}@${resolved.host}`, remoteCommand],
+    };
+    const commandResult = await runSsh2RawCommand(route, sshPassword, remoteCommand, timeoutMs);
+    return { invocation, commandResult };
+  }
+  if (route.transport === 'ssh') {
+    const invocation = buildRawSshCommand(route, remoteCommand);
+    const commandResult = await runIntercomCommand(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: invocation.env,
+      timeoutMs,
+    });
+    return { invocation, commandResult };
+  }
+  throw new Error('Direct remote capture tasks require an SSH intercom route');
+}
+
+async function runDirectIntercomCaptureTask(route: IntercomRoute, task: IntercomRemoteTaskRequest): Promise<{
+  invocation: { command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv };
+  commandResult: { exitCode: number | null; stdout: string; stderr: string; durationMs: number };
+} | null> {
+  const action = normalizeDirectTaskAction(task.action);
+  if (!action || route.transport !== 'ssh') {
+    return null;
+  }
+
+  if (action === 'screenshot') {
+    try {
+      return await runRawIntercomRemoteCommand(route, buildPosixScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+    } catch (error) {
+      if (shouldRetryWithAutoRemoteDiscovery(route, error)) {
+        return runRawIntercomRemoteCommand(route, buildWindowsScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+      }
+      throw error;
+    }
+  }
+
+  try {
+    return await runRawIntercomRemoteCommand(route, buildPosixDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+  } catch (desktopError) {
+    if (shouldRetryWithAutoRemoteDiscovery(route, desktopError)) {
+      try {
+        return await runRawIntercomRemoteCommand(route, buildWindowsDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+      } catch (windowsDesktopError) {
+        if (!isDesktopCameraUnavailable(windowsDesktopError)) {
+          throw windowsDesktopError;
+        }
+        return runRawIntercomRemoteCommand(route, buildWindowsCameraToolCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+      }
+    }
+    if (!isDesktopCameraUnavailable(desktopError)) {
+      throw desktopError;
+    }
+  }
+
+  try {
+    return await runRawIntercomRemoteCommand(route, buildPosixCameraToolCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+  } catch (toolError) {
+    if (shouldRetryWithAutoRemoteDiscovery(route, toolError)) {
+      return runRawIntercomRemoteCommand(route, buildWindowsCameraToolCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+    }
+    throw toolError;
+  }
 }
 
 function buildSsh2ConnectConfig(route: IntercomRoute, password: string): ConnectConfig {
@@ -2090,6 +2503,7 @@ function runSftpBatch(route: IntercomRoute, batch: string): Promise<{ stdout: st
 function runIntercomCommand(command: string, args: string[], options: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
 }): Promise<{ exitCode: number | null; stdout: string; stderr: string; durationMs: number }> {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
@@ -2120,7 +2534,8 @@ function runIntercomCommand(command: string, args: string[], options: {
     });
     const timeout = setTimeout(() => {
       const result = buildResult(null);
-      const message = `Intercom command timed out after ${Math.round(INTERCOM_COMMAND_TIMEOUT_MS / 1000)}s`;
+      const timeoutMs = options.timeoutMs ?? INTERCOM_COMMAND_TIMEOUT_MS;
+      const message = `Intercom command timed out after ${Math.round(timeoutMs / 1000)}s`;
       const error = new Error(`${message}. Check SSH key authentication and whether the remote OpenClaw command exits.`);
       Object.assign(error, {
         ...result,
@@ -2132,7 +2547,7 @@ function runIntercomCommand(command: string, args: string[], options: {
       });
       child.kill();
       finish(() => reject(error));
-    }, INTERCOM_COMMAND_TIMEOUT_MS);
+    }, options.timeoutMs ?? INTERCOM_COMMAND_TIMEOUT_MS);
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -2418,6 +2833,28 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
   const task = buildIntercomRemoteTaskRequest(input);
   const baseSessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
   const sessionId = buildTaskIntercomSessionId(baseSessionId, task.taskId);
+  const directResult = await runDirectIntercomCaptureTask(route, task);
+  if (directResult) {
+    return {
+      success: true,
+      queued: false,
+      taskId: task.taskId,
+      task,
+      result: normalizeIntercomRemoteTaskCommandResult(directResult.commandResult),
+      target,
+      sender,
+      transport: route.transport,
+      host: route.host,
+      agent: route.agent,
+      sessionId,
+      command: directResult.invocation.command,
+      args: directResult.invocation.args,
+      exitCode: directResult.commandResult.exitCode,
+      stdout: directResult.commandResult.stdout,
+      stderr: directResult.commandResult.stderr,
+      durationMs: directResult.commandResult.durationMs,
+    };
+  }
   const finalMessage = buildIntercomRemoteTaskMessage(sender, task);
   const { invocation, commandResult, sessionId: actualSessionId } = await runIntercomRouteMessage({
     route,
@@ -2430,7 +2867,7 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
     queued: false,
     taskId: task.taskId,
     task,
-    result: normalizeIntercomRemoteTaskResult(commandResult.stdout),
+    result: normalizeIntercomRemoteTaskCommandResult(commandResult),
     target,
     sender,
     transport: route.transport,

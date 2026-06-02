@@ -74,10 +74,12 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.attachFiles': 'Attach files',
         'remoteInstances.intercom.sendTask': 'Send task',
         'remoteInstances.intercom.screenshot': 'Screenshot',
+        'remoteInstances.intercom.camera': 'Camera',
         'remoteInstances.intercom.removeAttachment': 'Remove attachment',
         'remoteInstances.intercom.taskResultLabel': 'task result',
         'remoteInstances.intercom.transferDetailsLabel': 'transfers',
         'remoteInstances.intercom.screenshotTaskPrompt': 'Capture a screenshot on the remote machine and return it as an image artifact.',
+        'remoteInstances.intercom.cameraTaskPrompt': 'Ask the remote KTClaw desktop client to take a camera photo and return it as an image artifact.',
         'remoteInstances.intercom.send': 'Send',
         'remoteInstances.intercom.toasts.messageQueued': 'Message sent to Linux',
         'remoteInstances.intercom.toasts.messageDelivered': `Message delivered (${options?.code ?? 0})`,
@@ -465,6 +467,20 @@ describe('RemoteInstances message flow', () => {
       expect(taskCall).toBeTruthy();
       expect(String(taskCall?.[1]?.body)).toContain('"action":"screenshot"');
       expect(String(taskCall?.[1]?.body)).toContain('"format":"png"');
+    });
+  });
+
+  it('sends camera as a desktop-client-first remote task action', async () => {
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Camera' }));
+
+    await waitFor(() => {
+      const taskCall = vi.mocked(hostApiFetch).mock.calls.find(([path]) => path === '/api/intercom/tasks');
+      expect(taskCall).toBeTruthy();
+      expect(String(taskCall?.[1]?.body)).toContain('"action":"camera"');
+      expect(String(taskCall?.[1]?.body)).toContain('"format":"jpg"');
     });
   });
 });

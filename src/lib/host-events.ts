@@ -16,6 +16,7 @@ const HOST_EVENT_TO_IPC_CHANNEL: Record<string, string> = {
   'channel:whatsapp-qr': 'channel:whatsapp-qr',
   'channel:whatsapp-success': 'channel:whatsapp-success',
   'channel:whatsapp-error': 'channel:whatsapp-error',
+  'intercom:desktop-camera-request': 'intercom:desktop-camera-request',
 };
 
 function parseBrowserPreviewEvent(event: MessageEvent): unknown {
