@@ -231,6 +231,9 @@ const INTERCOM_DIRECT_FILE_INSPECT_TIMEOUT_MS = 45_000;
 const INTERCOM_DIRECT_FILE_PREVIEW_CHARS = 24_000;
 const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
+const INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS = 150;
+const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
+const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
@@ -1528,7 +1531,7 @@ function resolveSshHostAndUsername(route: IntercomRoute): { host: string; userna
   };
 }
 
-function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
+function buildRemoteOpenClawCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const remoteArgs = [
     'agent',
     '--local',
@@ -1547,6 +1550,145 @@ function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: st
     ? commandParts.map(quoteRemoteCommandPart).join(' ')
     : quotePosix(DEFAULT_REMOTE_OPENCLAW_COMMAND);
   return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
+}
+
+function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessionId: string): string {
+  return Buffer.from(JSON.stringify({
+    sessionKey: buildIntercomSessionKey(route, sessionId),
+    message,
+    idempotencyKey: `intercom-${randomUUID()}`,
+    timeoutSeconds: INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS,
+    httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+  }), 'utf8').toString('base64');
+}
+
+function buildPosixRemoteGatewayCommand(
+  route: IntercomRoute,
+  message: string,
+  sessionId: string,
+  fallbackCommand: string,
+): string {
+  const payloadBase64 = buildRemoteGatewayPayload(route, message, sessionId);
+  const pythonScript = `
+import base64
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
+http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
+poll_timeout = float(payload.get("timeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS})
+gateway_url = "http://127.0.0.1:18789/rpc"
+sent = False
+
+def rpc(method, params, timeout=None):
+    body = json.dumps({
+        "type": "req",
+        "id": "intercom-%d" % time.time_ns(),
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        gateway_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout or http_timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("type") == "res":
+        if data.get("ok") is False or data.get("error"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("payload")
+    if isinstance(data, dict) and "ok" in data:
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("data", data)
+    return data
+
+def messages_from(value):
+    if isinstance(value, dict):
+        items = value.get("messages") or value.get("history")
+        return items if isinstance(items, list) else []
+    return value if isinstance(value, list) else []
+
+def text_from_content(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if isinstance(value, str):
+                    parts.append(value)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts).strip()
+    if isinstance(content, dict):
+        value = content.get("text") or content.get("content")
+        return value.strip() if isinstance(value, str) else ""
+    return ""
+
+try:
+    session_key = payload["sessionKey"]
+    history_params = {"sessionKey": session_key, "limit": 500}
+    before = messages_from(rpc("chat.history", history_params))
+    before_count = len(before)
+    send_result = rpc("chat.send", {
+        "sessionKey": session_key,
+        "message": payload["message"],
+        "deliver": False,
+        "idempotencyKey": payload["idempotencyKey"],
+    })
+    sent = True
+    deadline = time.time() + poll_timeout
+    latest = before
+    while time.time() < deadline:
+        time.sleep(1.0)
+        latest = messages_from(rpc("chat.history", history_params))
+        new_messages = latest[before_count:] if len(latest) >= before_count else latest
+        for message in new_messages:
+            if isinstance(message, dict) and message.get("role") == "assistant" and text_from_content(message.get("content")):
+                print(json.dumps({
+                    "messages": new_messages,
+                    "result": send_result,
+                    "meta": {"via": "remote-gateway"},
+                }, ensure_ascii=False))
+                sys.exit(0)
+    print(json.dumps({
+        "messages": latest[before_count:] if len(latest) >= before_count else latest,
+        "result": send_result,
+        "meta": {"via": "remote-gateway", "status": "timeout_waiting_for_history"},
+    }, ensure_ascii=False))
+except Exception as exc:
+    if not sent:
+        sys.stderr.write("Remote Gateway fast path unavailable: %s\\n" % exc)
+        sys.exit(${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE})
+    print(json.dumps({
+        "messages": [{"role": "assistant", "content": "Remote Gateway run failed: %s" % exc}],
+        "meta": {"via": "remote-gateway", "error": str(exc)},
+    }, ensure_ascii=False))
+`;
+  const script = [
+    `if command -v python3 >/dev/null 2>&1; then KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64=${quotePosix(payloadBase64)} python3 - <<'PY'`,
+    pythonScript.trim(),
+    'PY',
+    'status=$?',
+    'if [ "$status" -eq 0 ]; then exit 0; fi',
+    `if [ "$status" -ne ${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE} ]; then exit "$status"; fi`,
+    'fi',
+    fallbackCommand,
+  ].join('\n');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
+  const fallbackCommand = buildRemoteOpenClawCommand(route, message, sessionId);
+  return buildPosixRemoteGatewayCommand(route, message, sessionId, fallbackCommand);
 }
 
 function shouldUseAutoRemoteCommand(route: IntercomRoute): boolean {
@@ -1598,10 +1740,43 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     '--json',
   ];
   const argsBase64 = Buffer.from(JSON.stringify(remoteArgs), 'utf-8').toString('base64');
+  const gatewayPayloadBase64 = buildRemoteGatewayPayload(route, message, sessionId);
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$argsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${argsBase64}'))`,
     '$openclawArgs = @($argsJson | ConvertFrom-Json)',
+    '$gatewayStarted = $false',
+    'try {',
+    `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${gatewayPayloadBase64}')) | ConvertFrom-Json`,
+    'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
+    '$body = @{ type = "req"; id = ("intercom-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
+    `$response = Invoke-RestMethod -Uri 'http://127.0.0.1:18789/rpc' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
+    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
+    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
+    'return $response',
+    '}',
+    'function Get-KTClawMessages { param($Value) if ($null -eq $Value) { return @() }; if ($Value.PSObject.Properties.Name -contains "messages") { return @($Value.messages) }; if ($Value.PSObject.Properties.Name -contains "history") { return @($Value.history) }; if ($Value -is [array]) { return @($Value) }; return @() }',
+    'function Get-KTClawText { param($Content) if ($null -eq $Content) { return "" }; if ($Content -is [string]) { return $Content.Trim() }; if ($Content -is [array]) { $parts = @(); foreach ($item in $Content) { if ($item -is [string]) { $parts += $item } elseif ($item.PSObject.Properties.Name -contains "text") { $parts += [string]$item.text } elseif ($item.PSObject.Properties.Name -contains "content") { $parts += [string]$item.content } }; return ([string]::Join("", $parts)).Trim() }; if ($Content.PSObject.Properties.Name -contains "text") { return ([string]$Content.text).Trim() }; if ($Content.PSObject.Properties.Name -contains "content") { return ([string]$Content.content).Trim() }; return "" }',
+    'function Get-KTClawNewMessages { param($Messages, [int]$Start) $items = @($Messages); if ($items.Count -le $Start) { return @() }; return @($items[$Start..($items.Count - 1)]) }',
+    '$historyParams = @{ sessionKey = [string]$payload.sessionKey; limit = 500 }',
+    '$before = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
+    '$beforeCount = $before.Count',
+    '$sendResult = Invoke-KTClawGatewayRpc "chat.send" @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; deliver = $false; idempotencyKey = [string]$payload.idempotencyKey }',
+    '$gatewayStarted = $true',
+    '$deadline = [DateTime]::UtcNow.AddSeconds([double]$payload.timeoutSeconds)',
+    '$latest = $before',
+    'while ([DateTime]::UtcNow -lt $deadline) {',
+    'Start-Sleep -Seconds 1',
+    '$latest = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
+    '$newMessages = @(Get-KTClawNewMessages $latest $beforeCount)',
+    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { @{ messages = $newMessages; result = $sendResult; meta = @{ via = "remote-gateway" } } | ConvertTo-Json -Depth 50 -Compress; exit 0 } }',
+    '}',
+    '$remaining = @(Get-KTClawNewMessages $latest $beforeCount)',
+    '@{ messages = $remaining; result = $sendResult; meta = @{ via = "remote-gateway"; status = "timeout_waiting_for_history" } } | ConvertTo-Json -Depth 50 -Compress',
+    'exit 0',
+    '} catch {',
+    'if ($gatewayStarted) { @{ messages = @(@{ role = "assistant"; content = ("Remote Gateway run failed: " + $_.Exception.Message) }); meta = @{ via = "remote-gateway"; error = $_.Exception.Message } } | ConvertTo-Json -Depth 20 -Compress; exit 0 }',
+    '}',
     '$cmd = Get-Command openclaw -ErrorAction SilentlyContinue',
     'if ($cmd) { & $cmd.Source @openclawArgs; exit $LASTEXITCODE }',
     '$candidatePaths = @(',

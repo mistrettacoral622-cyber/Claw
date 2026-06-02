@@ -466,7 +466,7 @@ describe('intercom service', () => {
         '-p',
         '2222',
         'ubuntu@srv-c',
-        expect.stringContaining("'sh' '-lc'"),
+        expect.stringContaining('http://127.0.0.1:18789/rpc'),
       ],
       expect.objectContaining({
         detached: false,
@@ -475,6 +475,8 @@ describe('intercom service', () => {
       }),
     );
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
+    expect(sshArgs.at(-1)).toContain('agent:ops:intercom');
     expect(sshArgs.at(-1)).toContain('[from agent dev] 更新头像');
   });
 
@@ -501,10 +503,12 @@ describe('intercom service', () => {
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
+    expect(sshArgs.at(-1)).toContain('http://127.0.0.1:18789/rpc');
+    expect(sshArgs.at(-1)).toContain('/opt/KTClaw/ktclaw');
+    expect(sshArgs.at(-1)).toContain('/opt/KTClaw/resources/openclaw/openclaw.mjs');
   });
 
-  it('runs SSH intercom agent calls locally on the remote host without probing its Gateway', async () => {
+  it('tries the remote Gateway fast path before falling back to a local remote agent call', async () => {
     configStore.current = {
       intercom: {
         agents: {
@@ -527,7 +531,10 @@ describe('intercom service', () => {
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain("'agent' '--local' '--to' 'agent:ops:intercom' '--agent' 'ops'");
+    expect(sshArgs.at(-1)).toContain('http://127.0.0.1:18789/rpc');
+    expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
+    expect(sshArgs.at(-1)).toContain('agent:ops:intercom');
+    expect(sshArgs.at(-1)).toContain('ktclaw-intercom');
   });
 
   it('retries legacy openclaw routes with the bundled Linux KTClaw command when the wrapper points at /usr/ktclaw', async () => {
@@ -564,7 +571,9 @@ describe('intercom service', () => {
     }));
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
-    expect(retryArgs.at(-1)).toContain("ELECTRON_RUN_AS_NODE='1' '/opt/KTClaw/ktclaw' '/opt/KTClaw/resources/openclaw/openclaw.mjs' 'agent'");
+    expect(retryArgs.at(-1)).toContain('/opt/KTClaw/ktclaw');
+    expect(retryArgs.at(-1)).toContain('/opt/KTClaw/resources/openclaw/openclaw.mjs');
+    expect(retryArgs.at(-1)).toContain('agent:ops:intercom');
   });
 
   it('runs discovered POSIX openclaw scripts through sh when execute permission is missing', async () => {
@@ -697,8 +706,8 @@ describe('intercom service', () => {
     expect(result.sessionId).toMatch(/^intercom-text-[a-f0-9]{8}$/);
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
-    expect(retryArgs.at(-1)).toContain("'--session-id' 'intercom-text-");
-    expect(retryArgs.at(-1)).toContain("'--to' 'agent:ops:intercom-text-");
+    expect(retryArgs.at(-1)).toContain('intercom-text-');
+    expect(retryArgs.at(-1)).toContain('agent:ops:intercom-text-');
     expect(retryArgs.at(-1)).toContain("[from agent dev] 你好");
   });
 
@@ -742,11 +751,11 @@ describe('intercom service', () => {
       password: 'linux-password',
     }));
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("'sh' '-lc'"),
+      expect.stringContaining('http://127.0.0.1:18789/rpc'),
       expect.any(Function),
     );
     expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining("'agent' '--local' '--to' 'agent:ops:intercom' '--agent' 'ops'"),
+      expect.stringContaining('agent:ops:intercom'),
       expect.any(Function),
     );
   });
@@ -807,8 +816,8 @@ describe('intercom service', () => {
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('remote_task');
     expect(sshArgs.at(-1)).toContain('"action": "inspect_file"');
-    expect(sshArgs.at(-1)).toContain("'--to' 'agent:ops:intercom-task-task-1'");
-    expect(sshArgs.at(-1)).toContain("'--session-id' 'intercom-task-task-1'");
+    expect(sshArgs.at(-1)).toContain('agent:ops:intercom-task-task-1');
+    expect(sshArgs.at(-1)).toContain('intercom-task-task-1');
     expect(result.sessionId).toBe('intercom-task-task-1');
   });
 
