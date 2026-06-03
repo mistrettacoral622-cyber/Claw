@@ -28,6 +28,7 @@ function readFileAsBase64(file: File): Promise<string> {
 export function IntercomDesktopCameraBridge() {
   const [request, setRequest] = useState<IntercomDesktopCameraRequest | null>(null);
   const completingRef = useRef(false);
+  const completedRequestIdsRef = useRef(new Set<string>());
 
   useEffect(() => subscribeHostEvent<IntercomDesktopCameraRequest>(
     INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL,
@@ -45,26 +46,31 @@ export function IntercomDesktopCameraBridge() {
       return;
     }
     completingRef.current = true;
-    const base64 = await readFileAsBase64(file);
-    await hostApiFetch('/api/intercom/desktop-camera/complete', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: request.requestId,
-        taskId: request.taskId,
-        artifactPath: request.artifactPath,
-        resultPath: request.resultPath,
-        base64,
-        fileName: file.name || 'camera.jpg',
-        mimeType: file.type || 'image/jpeg',
-      }),
-    });
-    toast.success('远程拍照结果已返回');
-    setRequest(null);
-    completingRef.current = false;
+    try {
+      const base64 = await readFileAsBase64(file);
+      await hostApiFetch('/api/intercom/desktop-camera/complete', {
+        method: 'POST',
+        body: JSON.stringify({
+          requestId: request.requestId,
+          taskId: request.taskId,
+          artifactPath: request.artifactPath,
+          resultPath: request.resultPath,
+          base64,
+          fileName: file.name || 'camera.jpg',
+          mimeType: file.type || 'image/jpeg',
+        }),
+      });
+      completedRequestIdsRef.current.add(request.requestId);
+      toast.success('远程拍照结果已返回');
+      setRequest(null);
+    } catch (error) {
+      completingRef.current = false;
+      throw error;
+    }
   }, [request]);
 
   const failRequest = useCallback(async (error: string) => {
-    if (!request || completingRef.current) {
+    if (!request || completingRef.current || completedRequestIdsRef.current.has(request.requestId)) {
       return;
     }
     completingRef.current = true;

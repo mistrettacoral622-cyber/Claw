@@ -2500,6 +2500,9 @@ async function generateImagePreview(filePath: string, mimeType: string, fileSize
       }
       const { readFile: readFileAsync } = await import('fs/promises');
       const buf = await readFileAsync(filePath);
+      if (buf.length === 0) {
+        return null;
+      }
       return `data:${mimeType};base64,${buf.toString('base64')}`;
     };
     const img = nativeImage.createFromPath(filePath);
@@ -2511,10 +2514,12 @@ async function generateImagePreview(filePath: string, mimeType: string, fileSize
       const resized = size.width >= size.height
         ? img.resize({ width: maxDim })   // landscape / square → constrain width
         : img.resize({ height: maxDim }); // portrait → constrain height
-      return `data:image/png;base64,${resized.toPNG().toString('base64')}`;
+      const png = resized.toPNG();
+      return png.length > 0 ? `data:image/png;base64,${png.toString('base64')}` : readOriginal();
     }
     if (typeof fileSize === 'number' && fileSize > MAX_DIRECT_THUMBNAIL_BYTES) {
-      return `data:image/png;base64,${img.toPNG().toString('base64')}`;
+      const png = img.toPNG();
+      return png.length > 0 ? `data:image/png;base64,${png.toString('base64')}` : null;
     }
     // Small image — use original (async read to avoid blocking)
     return readOriginal();

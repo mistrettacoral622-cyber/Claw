@@ -57,6 +57,7 @@ import { resolveWindowChromeOptions } from './window-chrome';
 import { createInitialWindowPresenter } from './initial-window-presenter';
 import { createStartupSmokeController } from './startup-smoke';
 import { startIntercomDesktopCameraRequestWatcher } from '../services/intercom-desktop-camera';
+import { startIntercomDesktopScreenshotRequestWatcher } from '../services/intercom-desktop-screenshot';
 import { INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL } from '../../shared/intercom-desktop-camera';
 
 // Disable GPU hardware acceleration globally for maximum stability across
@@ -154,6 +155,7 @@ let hostApiServer: Server | null = null;
 const hostApiSessionToken = randomBytes(24).toString('hex');
 const mainWindowFocusState = createMainWindowFocusState();
 let intercomDesktopCameraWatcherStop: (() => void) | null = null;
+let intercomDesktopScreenshotWatcherStop: (() => void) | null = null;
 const quitLifecycleState = createQuitLifecycleState();
 const startupSmokeController = createStartupSmokeController({
   enabled: STARTUP_SMOKE_ENABLED,
@@ -624,6 +626,8 @@ async function initialize(): Promise<void> {
     window.webContents.send(INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL, request);
     hostEventBus.emit(INTERCOM_DESKTOP_CAMERA_IPC_CHANNEL, request);
   });
+  intercomDesktopScreenshotWatcherStop?.();
+  intercomDesktopScreenshotWatcherStop = startIntercomDesktopScreenshotRequestWatcher();
 
   loadWindowContents(window);
 
@@ -849,6 +853,8 @@ if (gotTheLock) {
   app.on('will-quit', () => {
     intercomDesktopCameraWatcherStop?.();
     intercomDesktopCameraWatcherStop = null;
+    intercomDesktopScreenshotWatcherStop?.();
+    intercomDesktopScreenshotWatcherStop = null;
     releaseProcessInstanceFileLock();
   });
 
@@ -988,6 +994,8 @@ if (gotTheLock) {
 
     intercomDesktopCameraWatcherStop?.();
     intercomDesktopCameraWatcherStop = null;
+    intercomDesktopScreenshotWatcherStop?.();
+    intercomDesktopScreenshotWatcherStop = null;
     hostEventBus.closeAll();
     hostApiServer?.close();
 

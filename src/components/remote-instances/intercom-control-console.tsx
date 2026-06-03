@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type SetStateAction } from 'react';
 import {
   CheckCircle2,
   Camera,
@@ -94,6 +94,79 @@ type IntercomConversation = {
   messages: RawMessage[];
   runs: IntercomRunDetail[];
 };
+
+type IntercomConversationMap = Record<string, IntercomConversation>;
+
+const INTERCOM_CONVERSATIONS_STORAGE_KEY = 'ktclaw:intercom-control-conversations';
+const MAX_STORED_INTERCOM_MESSAGES_PER_ROUTE = 100;
+const MAX_STORED_INTERCOM_RUNS_PER_ROUTE = 40;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeStoredConversation(value: unknown): IntercomConversation {
+  const row = isRecord(value) ? value : {};
+  const messages = Array.isArray(row.messages)
+    ? row.messages
+        .filter((message) => (
+          isRecord(message)
+          && typeof message.role === 'string'
+          && ('content' in message)
+        ))
+        .map((message) => message as unknown as RawMessage)
+    : [];
+  const runs = Array.isArray(row.runs)
+    ? row.runs.filter(isRecord).map((run) => run as IntercomRunDetail)
+    : [];
+  return {
+    messages: messages.slice(-MAX_STORED_INTERCOM_MESSAGES_PER_ROUTE),
+    runs: runs.slice(-MAX_STORED_INTERCOM_RUNS_PER_ROUTE),
+  };
+}
+
+function trimIntercomConversations(conversations: IntercomConversationMap): IntercomConversationMap {
+  return Object.fromEntries(Object.entries(conversations).map(([routeId, conversation]) => [
+    routeId,
+    {
+      messages: conversation.messages.slice(-MAX_STORED_INTERCOM_MESSAGES_PER_ROUTE),
+      runs: conversation.runs.slice(-MAX_STORED_INTERCOM_RUNS_PER_ROUTE),
+    },
+  ]));
+}
+
+function readStoredIntercomConversations(): IntercomConversationMap {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(INTERCOM_CONVERSATIONS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (!isRecord(parsed)) {
+      return {};
+    }
+    return trimIntercomConversations(Object.fromEntries(Object.entries(parsed).map(([routeId, conversation]) => [
+      routeId,
+      normalizeStoredConversation(conversation),
+    ])));
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredIntercomConversations(conversations: IntercomConversationMap): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      INTERCOM_CONVERSATIONS_STORAGE_KEY,
+      JSON.stringify(trimIntercomConversations(conversations)),
+    );
+  } catch {
+    // Losing persisted UI history is preferable to blocking remote task sends.
+  }
+}
 
 function routeAddress(route: IntercomRoute): string {
   return route.sshUser ? `${route.sshUser}@${route.host}` : route.host;
@@ -301,7 +374,18 @@ export function IntercomControlConsole() {
     message: '',
   });
   const [stagedFiles, setStagedFiles] = useState<StagedRemoteFile[]>([]);
-  const [conversations, setConversations] = useState<Record<string, IntercomConversation>>({});
+  const [conversations, setConversationsState] = useState<IntercomConversationMap>(() => readStoredIntercomConversations());
+  const setConversations = useCallback((updater: SetStateAction<IntercomConversationMap>) => {
+    setConversationsState((current) => {
+      const next = trimIntercomConversations(
+        typeof updater === 'function'
+          ? (updater as (value: IntercomConversationMap) => IntercomConversationMap)(current)
+          : updater,
+      );
+      writeStoredIntercomConversations(next);
+      return next;
+    });
+  }, []);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageSeqRef = useRef(0);

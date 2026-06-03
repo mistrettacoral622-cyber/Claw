@@ -231,6 +231,8 @@ const INTERCOM_DIRECT_FILE_INSPECT_TIMEOUT_MS = 45_000;
 const INTERCOM_DIRECT_FILE_PREVIEW_CHARS = 24_000;
 const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
+const INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS = 3;
+const INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS = 15;
 const INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS = 150;
 const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
 const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
@@ -1965,6 +1967,14 @@ function buildDirectTaskResultJson(result: IntercomRemoteTaskResult): string {
   return JSON.stringify(result);
 }
 
+function shellNonEmptyFileTest(pathVariable = '$artifact'): string {
+  return `[ -s "${pathVariable}" ]`;
+}
+
+function powerShellNonEmptyFileTest(pathVariable = '$artifact'): string {
+  return `(Test-Path -LiteralPath ${pathVariable} -PathType Leaf) -and ((Get-Item -LiteralPath ${pathVariable}).Length -gt 0)`;
+}
+
 function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
   requestId: string;
   taskId: string;
@@ -1979,6 +1989,38 @@ function buildDesktopCameraRequest(task: IntercomRemoteTaskRequest): {
   const acceptedPath = joinRemotePath(outbox, 'desktop-camera-accepted.json');
   const resultPath = joinRemotePath(outbox, 'desktop-camera-result.json');
   const requestId = `camera-${safeRemotePathPart(task.taskId, 'task')}-${randomUUID().slice(0, 8)}`;
+  const reason = readTaskPayloadString(task, 'reason') || readTaskPayloadString(task, 'instruction');
+  return {
+    requestId,
+    taskId: task.taskId,
+    artifactPath,
+    acceptedPath,
+    resultPath,
+    requestJson: JSON.stringify({
+      requestId,
+      taskId: task.taskId,
+      artifactPath,
+      acceptedPath,
+      resultPath,
+      reason,
+      requestedAt: Date.now(),
+    }),
+  };
+}
+
+function buildDesktopScreenshotRequest(task: IntercomRemoteTaskRequest): {
+  requestId: string;
+  taskId: string;
+  artifactPath: string;
+  acceptedPath: string;
+  resultPath: string;
+  requestJson: string;
+} {
+  const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
+  const artifactPath = joinRemotePath(outbox, 'screenshot.png');
+  const acceptedPath = joinRemotePath(outbox, 'desktop-screenshot-accepted.json');
+  const resultPath = joinRemotePath(outbox, 'desktop-screenshot-result.json');
+  const requestId = `screenshot-${safeRemotePathPart(task.taskId, 'task')}-${randomUUID().slice(0, 8)}`;
   const reason = readTaskPayloadString(task, 'reason') || readTaskPayloadString(task, 'instruction');
   return {
     requestId,
@@ -2018,6 +2060,26 @@ function buildPosixDesktopCameraCommand(task: IntercomRemoteTaskRequest): string
   return `sh -lc ${quotePosix(script)}`;
 }
 
+function buildPosixDesktopScreenshotCommand(task: IntercomRemoteTaskRequest): string {
+  const request = buildDesktopScreenshotRequest(task);
+  const requestDir = `${INTERCOM_REMOTE_BASE_DIR}/desktop-screenshot-requests`;
+  const script = [
+    'set -eu',
+    `request_dir=${quotePosixRemotePath(requestDir)}`,
+    `accepted_path=${quotePosixRemotePath(request.acceptedPath)}`,
+    `result_path=${quotePosixRemotePath(request.resultPath)}`,
+    'mkdir -p "$request_dir" "${result_path%/*}"',
+    'rm -f "$accepted_path" "$result_path"',
+    `printf %s ${quotePosix(request.requestJson)} > "$request_dir/${safeRemotePathPart(request.requestId, 'request')}.json"`,
+    `i=0; while [ "$i" -lt ${INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS} ]; do if [ -f "$accepted_path" ]; then break; fi; sleep 1; i=$((i+1)); done`,
+    `if [ ! -f "$accepted_path" ]; then echo "KTClaw desktop screenshot service did not accept within ${INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS}s" >&2; exit 86; fi`,
+    `i=0; while [ "$i" -lt ${INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS} ]; do if [ -f "$result_path" ]; then cat "$result_path"; exit 0; fi; sleep 1; i=$((i+1)); done`,
+    `echo "KTClaw desktop screenshot service did not respond within ${INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS}s" >&2`,
+    'exit 86',
+  ].join('; ');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
 function buildWindowsDesktopCameraCommand(task: IntercomRemoteTaskRequest): string {
   const request = buildDesktopCameraRequest(task);
   const requestJsonBase64 = Buffer.from(request.requestJson, 'utf8').toString('base64');
@@ -2043,6 +2105,31 @@ function buildWindowsDesktopCameraCommand(task: IntercomRemoteTaskRequest): stri
   return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
 }
 
+function buildWindowsDesktopScreenshotCommand(task: IntercomRemoteTaskRequest): string {
+  const request = buildDesktopScreenshotRequest(task);
+  const requestJsonBase64 = Buffer.from(request.requestJson, 'utf8').toString('base64');
+  const requestFileName = `${safeRemotePathPart(request.requestId, 'request')}.json`;
+  const acceptedPath = remotePowerShellHomePath(request.acceptedPath);
+  const resultPath = remotePowerShellHomePath(request.resultPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$requestDir = Join-Path $HOME '.ktclaw\\intercom\\desktop-screenshot-requests'",
+    `$acceptedPath = ${JSON.stringify(acceptedPath)}`,
+    `$resultPath = ${JSON.stringify(resultPath)}`,
+    'New-Item -ItemType Directory -Force -Path $requestDir | Out-Null',
+    'New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resultPath) | Out-Null',
+    'Remove-Item -LiteralPath $acceptedPath,$resultPath -Force -ErrorAction SilentlyContinue',
+    `$requestJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${requestJsonBase64}'))`,
+    `[IO.File]::WriteAllText((Join-Path $requestDir ${JSON.stringify(requestFileName)}), $requestJson, [Text.Encoding]::UTF8)`,
+    `for ($i = 0; $i -lt ${INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS}; $i++) { if (Test-Path -LiteralPath $acceptedPath) { break }; Start-Sleep -Seconds 1 }`,
+    `if (-not (Test-Path -LiteralPath $acceptedPath)) { Write-Error "KTClaw desktop screenshot service did not accept within ${INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS}s"; exit 86 }`,
+    `for ($i = 0; $i -lt ${INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS}; $i++) { if (Test-Path -LiteralPath $resultPath) { Get-Content -LiteralPath $resultPath -Raw; exit 0 }; Start-Sleep -Seconds 1 }`,
+    `Write-Error "KTClaw desktop screenshot service did not respond within ${INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS}s"`,
+    'exit 86',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
+}
+
 function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
   const outbox = normalizeOutboxPath(readTaskPayloadString(task, 'outbox'), task.taskId);
   const artifactPath = joinRemotePath(outbox, 'screenshot.png');
@@ -2057,8 +2144,8 @@ function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
     success: false,
     summary: '',
     artifacts: [],
-    logs: 'No supported screenshot utility was found on the remote machine.',
-    error: 'No supported screenshot utility was found. Install gnome-screenshot, grim, scrot, ImageMagick import, or use the KTClaw desktop client.',
+    logs: 'No supported screenshot utility produced a readable image on the remote machine.',
+    error: 'No supported screenshot utility produced a readable image. Install gnome-screenshot, grim, scrot, ImageMagick import, or run KTClaw in an interactive desktop session.',
   });
   const script = [
     'set -eu',
@@ -2070,7 +2157,7 @@ function buildPosixScreenshotCommand(task: IntercomRemoteTaskRequest): string {
     'elif command -v scrot >/dev/null 2>&1; then scrot "$artifact";',
     'elif command -v import >/dev/null 2>&1; then import -window root "$artifact";',
     `else printf '%s\\n' ${quotePosix(failureJson)}; exit 0; fi`,
-    `if [ -f "$artifact" ]; then printf '%s\\n' ${quotePosix(successJson)}; else printf '%s\\n' ${quotePosix(failureJson)}; fi`,
+    `if ${shellNonEmptyFileTest()}; then printf '%s\\n' ${quotePosix(successJson)}; else rm -f "$artifact"; printf '%s\\n' ${quotePosix(failureJson)}; fi`,
   ].join(' ');
   return `sh -lc ${quotePosix(script)}`;
 }
@@ -2091,8 +2178,8 @@ function buildPosixCameraToolCommand(task: IntercomRemoteTaskRequest): string {
     success: false,
     summary: '',
     artifacts: [],
-    logs: 'KTClaw desktop camera UI did not respond and no supported camera utility was found.',
-    error: 'No supported camera utility was found. Install imagesnap, fswebcam, or ffmpeg, or keep the KTClaw desktop client open.',
+    logs: 'KTClaw desktop camera UI did not respond and no supported camera utility produced a readable image.',
+    error: 'No supported camera utility produced a readable image. Install imagesnap, fswebcam, or ffmpeg, or keep the KTClaw desktop client open.',
   });
   const script = [
     'set -eu',
@@ -2102,7 +2189,7 @@ function buildPosixCameraToolCommand(task: IntercomRemoteTaskRequest): string {
     'elif command -v fswebcam >/dev/null 2>&1; then fswebcam --no-banner "$artifact" >/dev/null;',
     'elif command -v ffmpeg >/dev/null 2>&1; then if [ "$(uname -s)" = "Darwin" ]; then ffmpeg -hide_banner -loglevel error -f avfoundation -i "0" -frames:v 1 -y "$artifact"; else ffmpeg -hide_banner -loglevel error -f v4l2 -i "${KTCLAW_CAMERA_DEVICE:-/dev/video0}" -frames:v 1 -y "$artifact"; fi;',
     `else printf '%s\\n' ${quotePosix(failureJson)}; exit 0; fi`,
-    `if [ -f "$artifact" ]; then printf '%s\\n' ${quotePosix(successJson)}; else printf '%s\\n' ${quotePosix(failureJson)}; fi`,
+    `if ${shellNonEmptyFileTest()}; then printf '%s\\n' ${quotePosix(successJson)}; else rm -f "$artifact"; printf '%s\\n' ${quotePosix(failureJson)}; fi`,
   ].join(' ');
   return `sh -lc ${quotePosix(script)}`;
 }
@@ -2123,7 +2210,7 @@ function buildWindowsScreenshotCommand(task: IntercomRemoteTaskRequest): string 
     summary: '',
     artifacts: [],
     logs: 'Windows screenshot capture failed. SSH sessions may not have access to the interactive desktop.',
-    error: 'Windows screenshot capture failed. Keep KTClaw desktop open or run the task in an interactive desktop session.',
+    error: 'Windows screenshot capture failed or produced an empty image. Keep KTClaw desktop open or run the task in an interactive desktop session.',
   });
   const script = [
     "$ErrorActionPreference = 'Stop'",
@@ -2138,7 +2225,7 @@ function buildWindowsScreenshotCommand(task: IntercomRemoteTaskRequest): string 
     '$graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)',
     '$bitmap.Save($artifact, [System.Drawing.Imaging.ImageFormat]::Png)',
     '$graphics.Dispose(); $bitmap.Dispose()',
-    `if (Test-Path -LiteralPath $artifact) { ${JSON.stringify(successJson)} } else { ${JSON.stringify(failureJson)} }`,
+    `if (${powerShellNonEmptyFileTest()}) { ${JSON.stringify(successJson)} } else { Remove-Item -LiteralPath $artifact -Force -ErrorAction SilentlyContinue; ${JSON.stringify(failureJson)} }`,
     '} catch {',
     `${JSON.stringify(failureJson)}`,
     '}',
@@ -2164,7 +2251,7 @@ function buildWindowsCameraToolCommand(task: IntercomRemoteTaskRequest): string 
     summary: '',
     artifacts: [],
     logs: 'KTClaw desktop camera UI did not respond and ffmpeg camera capture was unavailable.',
-    error: 'No supported Windows camera fallback was found. Install ffmpeg or keep the KTClaw desktop client open.',
+    error: 'No supported Windows camera fallback produced a readable image. Install ffmpeg or keep the KTClaw desktop client open.',
   });
   const script = [
     "$ErrorActionPreference = 'Stop'",
@@ -2177,7 +2264,7 @@ function buildWindowsCameraToolCommand(task: IntercomRemoteTaskRequest): string 
     `if (-not $match.Success) { ${JSON.stringify(failureJson)}; exit 0 }`,
     '$device = $match.Groups[1].Value',
     '& $ffmpeg.Source -hide_banner -loglevel error -f dshow -i "video=$device" -frames:v 1 -y $artifact',
-    `if (Test-Path -LiteralPath $artifact) { ${JSON.stringify(successJson)} } else { ${JSON.stringify(failureJson)} }`,
+    `if (${powerShellNonEmptyFileTest()}) { ${JSON.stringify(successJson)} } else { Remove-Item -LiteralPath $artifact -Force -ErrorAction SilentlyContinue; ${JSON.stringify(failureJson)} }`,
   ].join('; ');
   return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
 }
@@ -2574,8 +2661,54 @@ function getIntercomErrorExitCode(error: unknown): number | null {
 }
 
 function isDesktopCameraUnavailable(error: unknown): boolean {
+  const normalized = getIntercomErrorText(error).toLowerCase();
   return getIntercomErrorExitCode(error) === 86
-    || getIntercomErrorText(error).includes('KTClaw desktop camera UI did not respond');
+    || normalized.includes('ktclaw desktop camera ui did not respond')
+    || normalized.includes('ktclaw desktop camera ui did not accept')
+    || normalized.includes('ktclaw desktop camera ui did not return a photo')
+    || normalized.includes('desktop camera request was cancelled')
+    || normalized.includes('desktop camera request was canceled');
+}
+
+function isDesktopCameraUnavailableResult(commandResult: { stdout: string; stderr: string }): boolean {
+  const result = normalizeIntercomRemoteTaskCommandResult(commandResult);
+  if (result.success) {
+    return false;
+  }
+  if (result.error || result.logs || result.summary) {
+    return true;
+  }
+  return isDesktopCameraUnavailable([
+    result.summary,
+    result.logs,
+    result.error,
+    commandResult.stdout,
+    commandResult.stderr,
+  ].filter(Boolean).join('\n'));
+}
+
+function isDesktopScreenshotUnavailable(error: unknown): boolean {
+  const normalized = getIntercomErrorText(error).toLowerCase();
+  return getIntercomErrorExitCode(error) === 86
+    || normalized.includes('ktclaw desktop screenshot service did not respond')
+    || normalized.includes('ktclaw desktop screenshot service did not accept');
+}
+
+function isDesktopScreenshotUnavailableResult(commandResult: { stdout: string; stderr: string }): boolean {
+  const result = normalizeIntercomRemoteTaskCommandResult(commandResult);
+  if (result.success) {
+    return false;
+  }
+  if (result.error || result.logs || result.summary) {
+    return true;
+  }
+  return isDesktopScreenshotUnavailable([
+    result.summary,
+    result.logs,
+    result.error,
+    commandResult.stdout,
+    commandResult.stderr,
+  ].filter(Boolean).join('\n'));
 }
 
 async function runRawIntercomRemoteCommand(
@@ -2632,6 +2765,31 @@ async function runDirectIntercomCaptureTask(route: IntercomRoute, task: Intercom
 
   if (action === 'screenshot') {
     try {
+      const desktopResult = await runRawIntercomRemoteCommand(route, buildPosixDesktopScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+      if (!isDesktopScreenshotUnavailableResult(desktopResult.commandResult)) {
+        return desktopResult;
+      }
+    } catch (desktopError) {
+      if (shouldRetryWithAutoRemoteDiscovery(route, desktopError)) {
+        try {
+          const windowsDesktopResult = await runRawIntercomRemoteCommand(route, buildWindowsDesktopScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+          if (!isDesktopScreenshotUnavailableResult(windowsDesktopResult.commandResult)) {
+            return windowsDesktopResult;
+          }
+          return runRawIntercomRemoteCommand(route, buildWindowsScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+        } catch (windowsDesktopError) {
+          if (!isDesktopScreenshotUnavailable(windowsDesktopError)) {
+            throw windowsDesktopError;
+          }
+          return runRawIntercomRemoteCommand(route, buildWindowsScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+        }
+      }
+      if (!isDesktopScreenshotUnavailable(desktopError)) {
+        throw desktopError;
+      }
+    }
+
+    try {
       return await runRawIntercomRemoteCommand(route, buildPosixScreenshotCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
     } catch (error) {
       if (shouldRetryWithAutoRemoteDiscovery(route, error)) {
@@ -2642,11 +2800,18 @@ async function runDirectIntercomCaptureTask(route: IntercomRoute, task: Intercom
   }
 
   try {
-    return await runRawIntercomRemoteCommand(route, buildPosixDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+    const desktopResult = await runRawIntercomRemoteCommand(route, buildPosixDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+    if (!isDesktopCameraUnavailableResult(desktopResult.commandResult)) {
+      return desktopResult;
+    }
   } catch (desktopError) {
     if (shouldRetryWithAutoRemoteDiscovery(route, desktopError)) {
       try {
-        return await runRawIntercomRemoteCommand(route, buildWindowsDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+        const windowsDesktopResult = await runRawIntercomRemoteCommand(route, buildWindowsDesktopCameraCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
+        if (!isDesktopCameraUnavailableResult(windowsDesktopResult.commandResult)) {
+          return windowsDesktopResult;
+        }
+        return runRawIntercomRemoteCommand(route, buildWindowsCameraToolCommand(task), INTERCOM_DIRECT_CAPTURE_TIMEOUT_MS);
       } catch (windowsDesktopError) {
         if (!isDesktopCameraUnavailable(windowsDesktopError)) {
           throw windowsDesktopError;
@@ -3357,6 +3522,24 @@ export async function uploadIntercomFiles(input: IntercomUploadFilesInput): Prom
   };
 }
 
+function isImageArtifactDownload(artifact: IntercomDownloadArtifactInput, fileName: string): boolean {
+  const mimeType = normalizeString(artifact.mimeType);
+  return artifact.type === 'image'
+    || mimeType.startsWith('image/')
+    || inferArtifactType(fileName, mimeType) === 'image';
+}
+
+function assertDownloadedArtifactReadable(input: {
+  artifact: IntercomDownloadArtifactInput;
+  fileName: string;
+  localPath: string;
+  size: number;
+}): void {
+  if (isImageArtifactDownload(input.artifact, input.fileName) && input.size <= 0) {
+    throw new Error(`Downloaded remote image artifact is empty: ${input.fileName} (${input.localPath})`);
+  }
+}
+
 export async function downloadIntercomArtifacts(input: IntercomDownloadArtifactsInput): Promise<{
   success: true;
   taskId: string;
@@ -3410,8 +3593,14 @@ export async function downloadIntercomArtifacts(input: IntercomDownloadArtifacts
     }
     const startedAt = Date.now();
     await runSftpBatch(route, batch.join('\n'));
-    const transfers = await Promise.all(records.map(async (record) => {
+    const transfers = await Promise.all(records.map(async (record, index) => {
       const localStat = await stat(record.localPath || '');
+      assertDownloadedArtifactReadable({
+        artifact: artifacts[index] ?? { path: '' },
+        fileName: record.fileName,
+        localPath: record.localPath || '',
+        size: localStat.size,
+      });
       return {
         ...record,
         size: record.size || localStat.size,
@@ -3440,6 +3629,12 @@ export async function downloadIntercomArtifacts(input: IntercomDownloadArtifacts
       await ensureSftpDir(sftp, parentRemoteDir(remotePath));
       await sftpFastGet(sftp, remotePath, localPath);
       const localStat = await stat(localPath);
+      assertDownloadedArtifactReadable({
+        artifact,
+        fileName,
+        localPath,
+        size: localStat.size,
+      });
       records.push({
         id: randomUUID(),
         routeId: route.id,

@@ -164,6 +164,7 @@ describe('RemoteInstances message flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     invokeIpcMock.mockReset();
+    window.localStorage.clear();
     resetIntercomStore();
     remoteStdout = JSON.stringify({
       content: [
@@ -331,6 +332,27 @@ describe('RemoteInstances message flow', () => {
     expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
     expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument();
     expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
+  });
+
+  it('keeps intercom conversation history after the remote page unmounts', async () => {
+    const view = renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: 'Plan the next step' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('Plan the next step')).toBeInTheDocument();
+    expect(screen.getByText('Remote agent received the plan.')).toBeInTheDocument();
+
+    view.unmount();
+    resetIntercomStore();
+    renderPage();
+
+    expect(await screen.findByText('Plan the next step')).toBeInTheDocument();
+    expect(screen.getByText('Remote agent received the plan.')).toBeInTheDocument();
+    expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument();
   });
 
   it('renders returned OpenClaw messages with the normal chat bubble renderer', async () => {

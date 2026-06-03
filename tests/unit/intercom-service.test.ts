@@ -2,13 +2,14 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { configStore, ktclawFiles, secretStore, spawnMock, sshClientInstances } = vi.hoisted(() => ({
+const { configStore, ktclawFiles, secretStore, spawnMock, statMock, sshClientInstances } = vi.hoisted(() => ({
   configStore: {
     current: {} as Record<string, unknown>,
   },
   ktclawFiles: new Map<string, string>(),
   secretStore: new Map<string, unknown>(),
   spawnMock: vi.fn(),
+  statMock: vi.fn(async () => ({ size: 42 })),
   sshClientInstances: [] as Array<{
     handlers: Map<string, (...args: unknown[]) => void>;
     connect: ReturnType<typeof vi.fn>;
@@ -170,7 +171,7 @@ vi.mock('node:fs/promises', async () => {
     writeFile: vi.fn(async (filePath: string, data: string) => {
       ktclawFiles.set(String(filePath).replace(/\\/g, '/'), data);
     }),
-    stat: vi.fn(async () => ({ size: 42 })),
+    stat: (...args: unknown[]) => statMock(...args),
   };
 });
 
@@ -229,6 +230,8 @@ describe('intercom service', () => {
     sshClientInstances.length = 0;
     spawnMock.mockReset();
     spawnMock.mockReturnValue(createProcessMock({ stdout: '{"ok":true}\n' }));
+    statMock.mockReset();
+    statMock.mockResolvedValue({ size: 42 });
   });
 
   it('lists local agents as local intercom routes by default', async () => {
@@ -902,7 +905,7 @@ describe('intercom service', () => {
     }));
   });
 
-  it('runs screenshot tasks through the direct SSH capture path instead of an OpenClaw agent turn', async () => {
+  it('asks the remote KTClaw desktop client to capture screenshots before shell fallbacks', async () => {
     spawnMock.mockReturnValueOnce(createProcessMock({
       stdout: JSON.stringify({
         success: true,
@@ -910,7 +913,7 @@ describe('intercom service', () => {
         artifacts: [
           { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png', name: 'screenshot.png', mimeType: 'image/png' },
         ],
-        logs: 'Captured through SSH direct screenshot fast path.',
+        logs: 'Captured through KTClaw desktop screenshot request.',
         error: null,
       }),
     }));
@@ -938,10 +941,68 @@ describe('intercom service', () => {
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain('gnome-screenshot');
+    expect(sshArgs.at(-1)).toContain('desktop-screenshot-requests');
     expect(sshArgs.at(-1)).not.toContain('remote_task');
     expect(sshArgs.at(-1)).not.toContain("'agent' '--local'");
     expect(result.result).toEqual(expect.objectContaining({
+      summary: 'Screenshot captured.',
+      artifacts: [
+        expect.objectContaining({
+          type: 'image',
+          path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png',
+        }),
+      ],
+    }));
+  });
+
+  it('falls back to shell screenshot tools when the desktop screenshot service is unavailable', async () => {
+    spawnMock
+      .mockReturnValueOnce(createProcessMock({
+        stderr: 'KTClaw desktop screenshot service did not accept within 3s',
+        exitCode: 86,
+      }))
+      .mockReturnValueOnce(createProcessMock({
+        stdout: JSON.stringify({
+          success: true,
+          summary: 'Screenshot captured.',
+          artifacts: [
+            { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/screenshot.png', name: 'screenshot.png', mimeType: 'image/png' },
+          ],
+          logs: 'Captured through SSH direct screenshot fast path.',
+          error: null,
+        }),
+      }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'screenshot',
+      payload: { outbox: '~/.ktclaw/intercom/outbox/task-1/', format: 'png' },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const desktopCommand = spawnMock.mock.calls[0][1] as string[];
+    const fallbackCommand = spawnMock.mock.calls[1][1] as string[];
+    expect(desktopCommand.at(-1)).toContain('desktop-screenshot-requests');
+    expect(fallbackCommand.at(-1)).toContain('gnome-screenshot');
+    expect(fallbackCommand.at(-1)).not.toContain('remote_task');
+    expect(result.result).toEqual(expect.objectContaining({
+      success: true,
       summary: 'Screenshot captured.',
       artifacts: [
         expect.objectContaining({
@@ -992,6 +1053,69 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).not.toContain('ffmpeg');
     expect(sshArgs.at(-1)).not.toContain('remote_task');
     expect(result.result).toEqual(expect.objectContaining({
+      summary: 'Camera photo captured.',
+      artifacts: [
+        expect.objectContaining({
+          type: 'image',
+          path: '~/.ktclaw/intercom/outbox/task-1/camera.jpg',
+        }),
+      ],
+    }));
+  });
+
+  it('falls back to camera tools when the desktop camera request is cancelled', async () => {
+    spawnMock
+      .mockReturnValueOnce(createProcessMock({
+        stdout: JSON.stringify({
+          success: false,
+          summary: '',
+          artifacts: [],
+          logs: 'KTClaw desktop camera UI did not return a photo.',
+          error: 'Desktop camera request was cancelled.',
+        }),
+      }))
+      .mockReturnValueOnce(createProcessMock({
+        stdout: JSON.stringify({
+          success: true,
+          summary: 'Camera photo captured.',
+          artifacts: [
+            { type: 'image', path: '~/.ktclaw/intercom/outbox/task-1/camera.jpg', name: 'camera.jpg', mimeType: 'image/jpeg' },
+          ],
+          logs: 'Captured through SSH direct camera tool fallback.',
+          error: null,
+        }),
+      }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { sendIntercomTask } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomTask({
+      target: 'ops',
+      sender: 'dev',
+      taskId: 'task-1',
+      action: 'camera',
+      payload: { outbox: '~/.ktclaw/intercom/outbox/task-1/', format: 'jpg' },
+      return: ['summary', 'artifacts', 'logs'],
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const desktopCommand = spawnMock.mock.calls[0][1] as string[];
+    const fallbackCommand = spawnMock.mock.calls[1][1] as string[];
+    expect(desktopCommand.at(-1)).toContain('desktop-camera-requests');
+    expect(fallbackCommand.at(-1)).toContain('fswebcam');
+    expect(fallbackCommand.at(-1)).toContain('ffmpeg');
+    expect(result.result).toEqual(expect.objectContaining({
+      success: true,
       summary: 'Camera photo captured.',
       artifacts: [
         expect.objectContaining({
@@ -1233,6 +1357,34 @@ describe('intercom service', () => {
       expect.stringContaining('result.png'),
       expect.any(Function),
     );
+  });
+
+  it('rejects empty downloaded image artifacts before rendering previews', async () => {
+    secretStore.set('intercom:ssh:ops', {
+      type: 'local',
+      accountId: 'intercom:ssh:ops',
+      apiKey: 'linux-password',
+    });
+    statMock.mockResolvedValueOnce({ size: 0 });
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+          },
+        },
+      },
+    };
+    const { downloadIntercomArtifacts } = await import('@electron/services/intercom');
+
+    await expect(downloadIntercomArtifacts({
+      target: 'ops',
+      taskId: 'task-1',
+      artifacts: [{ path: '~/.ktclaw/intercom/outbox/task-1/result.png', type: 'image', mimeType: 'image/png' }],
+    })).rejects.toThrow('Downloaded remote image artifact is empty');
   });
 
   it('downloads artifacts with system sftp when no SSH password is saved', async () => {
