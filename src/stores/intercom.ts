@@ -101,6 +101,18 @@ export type IntercomSendResult = {
   stdout: string;
   stderr: string;
   durationMs: number | null;
+  pending?: boolean;
+  poll?: {
+    sessionId: string;
+    beforeCount: number;
+    status: 'running' | 'completed' | 'timeout_waiting_for_history';
+  };
+};
+
+export type IntercomPollInput = {
+  target: string;
+  sessionId?: string;
+  beforeCount?: number;
 };
 
 export type IntercomRemoteTaskReturnChannel = 'summary' | 'artifacts' | 'logs';
@@ -207,6 +219,7 @@ type IntercomState = {
   upsertRoute: (input: IntercomRouteInput) => Promise<void>;
   deleteRoute: (routeId: string) => Promise<void>;
   sendMessage: (input: IntercomSendInput) => Promise<IntercomSendResult>;
+  pollMessage: (input: IntercomPollInput) => Promise<IntercomSendResult>;
   sendTask: (input: IntercomTaskSendInput) => Promise<IntercomTaskSendResult>;
   uploadFiles: (input: {
     target: string;
@@ -414,8 +427,23 @@ function normalizeStringArray(value: unknown): string[] {
     : [];
 }
 
+function readIntercomPollStatus(value: unknown): NonNullable<IntercomSendResult['poll']>['status'] {
+  return value === 'completed' || value === 'timeout_waiting_for_history'
+    ? value
+    : 'running';
+}
+
 function normalizeSendResult(value: unknown): IntercomSendResult {
   const row = isRecord(value) ? value : {};
+  const poll = isRecord(row.poll)
+    && typeof row.poll.beforeCount === 'number'
+    && Number.isFinite(row.poll.beforeCount)
+    ? {
+        sessionId: readString(row.poll.sessionId) ?? readString(row.sessionId) ?? 'intercom',
+        beforeCount: Math.max(0, Math.floor(row.poll.beforeCount)),
+        status: readIntercomPollStatus(row.poll.status),
+      }
+    : undefined;
   return {
     success: row.success !== false,
     queued: row.queued === true,
@@ -431,6 +459,8 @@ function normalizeSendResult(value: unknown): IntercomSendResult {
     stdout: readString(row.stdout) ?? '',
     stderr: readString(row.stderr) ?? '',
     durationMs: typeof row.durationMs === 'number' ? row.durationMs : null,
+    pending: row.pending === true,
+    poll,
   };
 }
 
@@ -678,6 +708,21 @@ export const useIntercomStore = create<IntercomState>((set, get) => ({
         error: toErrorMessage(error),
         lastSendResult: failedResult.success === false ? failedResult : null,
       });
+      throw error;
+    }
+  },
+
+  pollMessage: async (input) => {
+    try {
+      const response = await hostApiFetch('/api/intercom/poll', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      const result = normalizeSendResult(response);
+      set({ lastSendResult: result });
+      return result;
+    } catch (error) {
+      set({ error: toErrorMessage(error) });
       throw error;
     }
   },

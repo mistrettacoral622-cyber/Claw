@@ -237,7 +237,10 @@ function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): R
   if (successfulRun && looksLikeStructuredIntercomOutput(result.stderr)) {
     outputs.push(result.stderr);
   }
-  const messages = dedupeIntercomMessages(outputs.flatMap((output) => extractIntercomReplyMessages(output)));
+  const extractedMessages = dedupeIntercomMessages(outputs.flatMap((output) => extractIntercomReplyMessages(output)));
+  const messages = extractedMessages.some((message) => message.role === 'assistant')
+    ? extractedMessages.filter((message) => message.role !== 'user')
+    : extractedMessages;
   if (messages.length > 0) {
     return messages.map((message, index) => ({
       ...message,
@@ -249,6 +252,22 @@ function buildAssistantMessages(result: IntercomSendResult, idPrefix: string): R
     return [createIntercomMessage('assistant', result.stderr.trim(), `${idPrefix}-assistant-error`)];
   }
   return [];
+}
+
+function replaceConversationMessage(
+  messages: RawMessage[],
+  placeholderId: string,
+  replacements: RawMessage[],
+): RawMessage[] {
+  const index = messages.findIndex((message) => message.id === placeholderId);
+  if (index < 0) {
+    return [...messages, ...replacements];
+  }
+  return [
+    ...messages.slice(0, index),
+    ...replacements,
+    ...messages.slice(index + 1),
+  ];
 }
 
 function buildTaskAssistantMessage(
@@ -354,6 +373,7 @@ export function IntercomControlConsole() {
   const fetchIntercom = useIntercomStore((state) => state.fetchIntercom);
   const upsertRoute = useIntercomStore((state) => state.upsertRoute);
   const sendMessage = useIntercomStore((state) => state.sendMessage);
+  const pollMessage = useIntercomStore((state) => state.pollMessage);
   const sendTask = useIntercomStore((state) => state.sendTask);
   const uploadFiles = useIntercomStore((state) => state.uploadFiles);
   const downloadArtifacts = useIntercomStore((state) => state.downloadArtifacts);
@@ -389,6 +409,7 @@ export function IntercomControlConsole() {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageSeqRef = useRef(0);
+  const pollTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const selectedRoute = sshRoutes.find((route) => route.id === selectedRouteId) ?? null;
   const previewDraft = selectedRoute ? deriveIntercomRouteDraft(selectedRoute) : routeDraft;
@@ -400,6 +421,13 @@ export function IntercomControlConsole() {
   useEffect(() => {
     void fetchIntercom();
   }, [fetchIntercom]);
+
+  useEffect(() => () => {
+    for (const timer of pollTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    pollTimersRef.current.clear();
+  }, []);
 
   useEffect(() => {
     setSelectedRouteId((current) => {
@@ -516,6 +544,132 @@ export function IntercomControlConsole() {
     }
   };
 
+  const updatePendingAssistantMessage = useCallback((routeId: string, messageId: string, content: string) => {
+    setConversations((current) => {
+      const conversation = current[routeId] ?? { messages: [], runs: [] };
+      return {
+        ...current,
+        [routeId]: {
+          ...conversation,
+          messages: conversation.messages.map((message) => (
+            message.id === messageId ? { ...message, content } : message
+          )),
+        },
+      };
+    });
+  }, [setConversations]);
+
+  const finishPendingAssistantMessage = useCallback((
+    routeId: string,
+    placeholderId: string,
+    replacements: RawMessage[],
+    run?: IntercomRunDetail,
+  ) => {
+    setConversations((current) => {
+      const conversation = current[routeId] ?? { messages: [], runs: [] };
+      return {
+        ...current,
+        [routeId]: {
+          messages: replaceConversationMessage(conversation.messages, placeholderId, replacements),
+          runs: run ? [...conversation.runs, run] : conversation.runs,
+        },
+      };
+    });
+  }, [setConversations]);
+
+  const startPendingMessagePoll = useCallback((params: {
+    routeId: string;
+    messageId: string;
+    placeholderId: string;
+    sessionId: string;
+    beforeCount: number;
+    commandPreview: string;
+  }) => {
+    const timerKey = `${params.routeId}:${params.placeholderId}`;
+    const existingTimer = pollTimersRef.current.get(timerKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const clearTimer = () => {
+      const timer = pollTimersRef.current.get(timerKey);
+      if (timer) {
+        clearTimeout(timer);
+      }
+      pollTimersRef.current.delete(timerKey);
+    };
+
+    const pollOnce = async (attempt: number) => {
+      try {
+        const result = await pollMessage({
+          target: params.routeId,
+          sessionId: params.sessionId,
+          beforeCount: params.beforeCount,
+        });
+        const assistantMessages = buildAssistantMessages(result, params.messageId);
+        if (assistantMessages.length > 0) {
+          clearTimer();
+          finishPendingAssistantMessage(
+            params.routeId,
+            params.placeholderId,
+            assistantMessages,
+            createRunDetail(
+              result,
+              `${params.messageId}-poll-run`,
+              params.commandPreview,
+            ),
+          );
+          toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
+            code: result.exitCode ?? 0,
+          }));
+          return;
+        }
+
+        if (!result.pending && attempt >= 1) {
+          clearTimer();
+          updatePendingAssistantMessage(
+            params.routeId,
+            params.placeholderId,
+            t('remoteInstances.intercom.noAssistantReply'),
+          );
+          return;
+        }
+
+        if (attempt >= 40) {
+          clearTimer();
+          updatePendingAssistantMessage(
+            params.routeId,
+            params.placeholderId,
+            t('remoteInstances.intercom.remoteStillRunning'),
+          );
+          return;
+        }
+
+        updatePendingAssistantMessage(
+          params.routeId,
+          params.placeholderId,
+          t('remoteInstances.intercom.remoteGeneratingReply'),
+        );
+        const timer = setTimeout(() => {
+          void pollOnce(attempt + 1);
+        }, 3000);
+        pollTimersRef.current.set(timerKey, timer);
+      } catch (error) {
+        clearTimer();
+        const message = error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed');
+        finishPendingAssistantMessage(params.routeId, params.placeholderId, [
+          createIntercomMessage('assistant', message, `${params.messageId}-poll-error`),
+        ]);
+        toast.error(message);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      void pollOnce(0);
+    }, 1500);
+    pollTimersRef.current.set(timerKey, timer);
+  }, [finishPendingAssistantMessage, pollMessage, t, updatePendingAssistantMessage]);
+
   const handleSendMessage = async () => {
     if (!selectedRoute) {
       toast.error(t('remoteInstances.intercom.routeNeedsSave'));
@@ -529,6 +683,7 @@ export function IntercomControlConsole() {
     const routeId = selectedRoute.id;
     messageSeqRef.current += 1;
     const messageId = `${routeId}-${messageSeqRef.current}`;
+    const pendingMessageId = `${messageId}-assistant-pending`;
     const commandPreview = buildSshPreview(previewDraft, text, messageDraft.sender.trim());
     setConversations((current) => {
       const conversation = current[routeId] ?? { messages: [], runs: [] };
@@ -539,6 +694,7 @@ export function IntercomControlConsole() {
           messages: [
             ...conversation.messages,
             createIntercomMessage('user', text, `${messageId}-user`),
+            createIntercomMessage('assistant', t('remoteInstances.intercom.remoteDispatching'), pendingMessageId),
           ],
         },
       };
@@ -552,15 +708,25 @@ export function IntercomControlConsole() {
         message: text,
         sessionId: selectedRoute.sessionId || DEFAULT_INTERCOM_SESSION_ID,
       });
+      const assistantMessages = buildAssistantMessages(result, messageId);
       setConversations((current) => {
         const conversation = current[routeId] ?? { messages: [], runs: [] };
         return {
           ...current,
           [routeId]: {
-            messages: [
-              ...conversation.messages,
-              ...buildAssistantMessages(result, messageId),
-            ],
+            messages: result.pending && assistantMessages.length === 0
+              ? conversation.messages.map((message) => (
+                  message.id === pendingMessageId
+                    ? { ...message, content: t('remoteInstances.intercom.remoteGeneratingReply') }
+                    : message
+                ))
+              : replaceConversationMessage(
+                  conversation.messages,
+                  pendingMessageId,
+                  assistantMessages.length > 0
+                    ? assistantMessages
+                    : [createIntercomMessage('assistant', t('remoteInstances.intercom.noAssistantReply'), `${messageId}-assistant-empty`)],
+                ),
             runs: [
               ...conversation.runs,
               createRunDetail(result, `${messageId}-run`, commandPreview),
@@ -569,9 +735,20 @@ export function IntercomControlConsole() {
         };
       });
       setDetailsOpen(false);
-      toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
-        code: result.exitCode ?? 0,
-      }));
+      if (result.pending && result.poll && assistantMessages.length === 0) {
+        startPendingMessagePoll({
+          routeId,
+          messageId,
+          placeholderId: pendingMessageId,
+          sessionId: result.poll.sessionId,
+          beforeCount: result.poll.beforeCount,
+          commandPreview,
+        });
+      } else {
+        toast.success(t('remoteInstances.intercom.toasts.messageDelivered', {
+          code: result.exitCode ?? 0,
+        }));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.messageFailed');
       setConversations((current) => {
@@ -580,10 +757,9 @@ export function IntercomControlConsole() {
           ...current,
           [routeId]: {
             ...conversation,
-            messages: [
-              ...conversation.messages,
+            messages: replaceConversationMessage(conversation.messages, pendingMessageId, [
               createIntercomMessage('assistant', message, `${messageId}-error`),
-            ],
+            ]),
           },
         };
       });

@@ -7,6 +7,7 @@ const getIntercomSnapshotMock = vi.fn();
 const upsertIntercomRouteMock = vi.fn();
 const deleteIntercomRouteMock = vi.fn();
 const sendIntercomMessageMock = vi.fn();
+const pollIntercomMessageMock = vi.fn();
 const sendIntercomTaskMock = vi.fn();
 const uploadIntercomFilesMock = vi.fn();
 const downloadIntercomArtifactsMock = vi.fn();
@@ -26,6 +27,7 @@ vi.mock('@electron/services/intercom', () => ({
   upsertIntercomRoute: (...args: unknown[]) => upsertIntercomRouteMock(...args),
   deleteIntercomRoute: (...args: unknown[]) => deleteIntercomRouteMock(...args),
   sendIntercomMessage: (...args: unknown[]) => sendIntercomMessageMock(...args),
+  pollIntercomMessage: (...args: unknown[]) => pollIntercomMessageMock(...args),
   sendIntercomTask: (...args: unknown[]) => sendIntercomTaskMock(...args),
   uploadIntercomFiles: (...args: unknown[]) => uploadIntercomFilesMock(...args),
   downloadIntercomArtifacts: (...args: unknown[]) => downloadIntercomArtifactsMock(...args),
@@ -202,6 +204,39 @@ describe('intercom routes', () => {
       stdout: '',
       stderr: 'ssh failed',
       durationMs: 42,
+    });
+  });
+
+  it('polls remote gateway history for pending intercom messages', async () => {
+    parseJsonBodyMock.mockResolvedValue({ target: 'ops', sessionId: 'intercom', beforeCount: 4 });
+    pollIntercomMessageMock.mockResolvedValue({
+      success: true,
+      queued: false,
+      target: 'ops',
+      stdout: '{"messages":[],"meta":{"status":"running"}}',
+      stderr: '',
+      exitCode: 0,
+      pending: true,
+    });
+    const { handleIntercomRoutes } = await import('@electron/api/routes/intercom');
+
+    const handled = await handleIntercomRoutes(
+      { method: 'POST' } as IncomingMessage,
+      {} as ServerResponse,
+      new URL('http://127.0.0.1:3210/api/intercom/poll'),
+      {} as never,
+    );
+
+    expect(handled).toBe(true);
+    expect(pollIntercomMessageMock).toHaveBeenCalledWith({ target: 'ops', sessionId: 'intercom', beforeCount: 4 });
+    expect(sendJsonMock).toHaveBeenCalledWith(expect.anything(), 200, {
+      success: true,
+      queued: false,
+      target: 'ops',
+      stdout: '{"messages":[],"meta":{"status":"running"}}',
+      stderr: '',
+      exitCode: 0,
+      pending: true,
     });
   });
 

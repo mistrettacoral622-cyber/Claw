@@ -65,6 +65,10 @@ vi.mock('react-i18next', () => ({
         'remoteInstances.intercom.previewLabel': 'Command preview',
         'remoteInstances.intercom.routeNeedsSave': 'Save route before sending',
         'remoteInstances.intercom.readyToSend': 'Ready to send through SSH',
+        'remoteInstances.intercom.remoteDispatching': 'Connecting to the remote KTClaw Gateway...',
+        'remoteInstances.intercom.remoteGeneratingReply': 'Remote KTClaw received the message and is generating a reply...',
+        'remoteInstances.intercom.remoteStillRunning': 'Remote KTClaw is still working.',
+        'remoteInstances.intercom.noAssistantReply': 'The remote command completed, but no assistant text has been returned yet.',
         'remoteInstances.intercom.deliveryResultTitle': 'Remote response',
         'remoteInstances.intercom.deliveryFailedTitle': 'Delivery failed',
         'remoteInstances.intercom.exitCodeLabel': 'Exit code',
@@ -136,6 +140,16 @@ let remoteStdout = JSON.stringify({
   ],
 });
 let remoteStderr = '';
+let remotePending = false;
+let pollStdout = JSON.stringify({
+  messages: [
+    {
+      role: 'assistant',
+      content: [{ text: 'Remote poll reply.' }],
+    },
+  ],
+  meta: { status: 'completed', beforeCount: 3, sessionKey: 'agent:zz:intercom' },
+});
 
 function resetIntercomStore() {
   useIntercomStore.setState({
@@ -175,6 +189,16 @@ describe('RemoteInstances message flow', () => {
       ],
     });
     remoteStderr = '';
+    remotePending = false;
+    pollStdout = JSON.stringify({
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ text: 'Remote poll reply.' }],
+        },
+      ],
+      meta: { status: 'completed', beforeCount: 3, sessionKey: 'agent:zz:intercom' },
+    });
     vi.mocked(hostApiFetch).mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === '/api/intercom' && (!init || init.method === undefined)) {
         return READY_INTERCOM_RESPONSE;
@@ -195,6 +219,33 @@ describe('RemoteInstances message flow', () => {
           stdout: remoteStdout,
           stderr: remoteStderr,
           durationMs: 123,
+          pending: remotePending,
+          poll: remotePending
+            ? {
+                sessionId: 'intercom',
+                beforeCount: 3,
+                status: 'running',
+              }
+            : undefined,
+        };
+      }
+      if (path === '/api/intercom/poll' && init?.method === 'POST') {
+        return {
+          success: true,
+          queued: false,
+          target: 'linux-ktclaw',
+          sender: 'ktclaw',
+          transport: 'ssh',
+          host: '10.101.208.178',
+          agent: 'zz',
+          sessionId: 'intercom',
+          command: 'ssh',
+          args: [],
+          exitCode: 0,
+          stdout: pollStdout,
+          stderr: '',
+          durationMs: 321,
+          pending: false,
         };
       }
       if (path === '/api/files/stage-paths' && init?.method === 'POST') {
@@ -332,6 +383,60 @@ describe('RemoteInstances message flow', () => {
     expect(screen.queryByText(/Command completed with exit code/)).not.toBeInTheDocument();
     expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument();
     expect(screen.queryByText('A2A context is preserved for follow-up turns')).not.toBeInTheDocument();
+  });
+
+  it('shows a running remote gateway reply and replaces it after polling history', async () => {
+    remotePending = true;
+    remoteStdout = JSON.stringify({
+      messages: [],
+      meta: {
+        via: 'remote-gateway',
+        status: 'running',
+        beforeCount: 3,
+        sessionKey: 'agent:zz:intercom',
+      },
+    });
+    pollStdout = JSON.stringify({
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ text: 'Remote Gateway finished quickly enough.' }],
+        },
+      ],
+      meta: {
+        via: 'remote-gateway-poll',
+        status: 'completed',
+        beforeCount: 3,
+        sessionKey: 'agent:zz:intercom',
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Remote instance control')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Intercom message'), {
+      target: { value: '你好' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByText('你好')).toBeInTheDocument();
+    expect(await screen.findByText('Remote KTClaw received the message and is generating a reply...')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(hostApiFetch).toHaveBeenCalledWith(
+        '/api/intercom/poll',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            target: 'linux-ktclaw',
+            sessionId: 'intercom',
+            beforeCount: 3,
+          }),
+        }),
+      );
+    }, { timeout: 2500 });
+    expect(await screen.findByText('Remote Gateway finished quickly enough.')).toBeInTheDocument();
+    expect(screen.queryByText('Remote KTClaw received the message and is generating a reply...')).not.toBeInTheDocument();
   });
 
   it('keeps intercom conversation history after the remote page unmounts', async () => {

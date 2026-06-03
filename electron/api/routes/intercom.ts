@@ -7,6 +7,7 @@ import {
   getIntercomHostReadiness,
   getIntercomSnapshot,
   installIntercomProtocol,
+  pollIntercomMessage,
   prepareIntercomHost,
   sendIntercomMessage,
   sendIntercomTask,
@@ -14,6 +15,7 @@ import {
   upsertIntercomRoute,
   uploadIntercomFiles,
   type IntercomDownloadArtifactsInput,
+  type IntercomPollInput,
   type IntercomRouteInput,
   type IntercomRemoteTaskSendInput,
   type IntercomSendInput,
@@ -141,6 +143,17 @@ export async function handleIntercomRoutes(
     try {
       const body = await parseJsonBody<IntercomSendInput>(req);
       sendJson(res, 200, await sendIntercomMessage(body));
+    } catch (error) {
+      sendIntercomCommandError(res, error);
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/intercom/poll' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody<IntercomPollInput>(req);
+      assertString(body.target, 'target');
+      sendJson(res, 200, await pollIntercomMessage(body));
     } catch (error) {
       sendIntercomCommandError(res, error);
     }

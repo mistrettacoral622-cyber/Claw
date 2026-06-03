@@ -120,6 +120,18 @@ export interface IntercomSendResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  pending?: boolean;
+  poll?: {
+    sessionId: string;
+    beforeCount: number;
+    status: 'running' | 'completed' | 'timeout_waiting_for_history';
+  };
+}
+
+export interface IntercomPollInput {
+  target: string;
+  sessionId?: string;
+  beforeCount?: number;
 }
 
 export type IntercomRemoteTaskReturnChannel = 'summary' | 'artifacts' | 'logs';
@@ -233,8 +245,9 @@ const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
 const INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS = 15;
-const INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS = 150;
+const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 7;
 const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
+const INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS = 180;
 const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
@@ -1559,8 +1572,9 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
     sessionKey: buildIntercomSessionKey(route, sessionId),
     message,
     idempotencyKey: `intercom-${randomUUID()}`,
-    timeoutSeconds: INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS,
+    timeoutSeconds: INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS,
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+    sendHttpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS,
   }), 'utf8').toString('base64');
 }
 
@@ -1575,14 +1589,16 @@ function buildPosixRemoteGatewayCommand(
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
-poll_timeout = float(payload.get("timeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_POLL_TIMEOUT_SECONDS})
+poll_timeout = float(payload.get("timeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS})
 gateway_url = "http://127.0.0.1:18789/rpc"
 sent = False
 
@@ -1640,13 +1656,77 @@ try:
     history_params = {"sessionKey": session_key, "limit": 500}
     before = messages_from(rpc("chat.history", history_params))
     before_count = len(before)
-    send_result = rpc("chat.send", {
-        "sessionKey": session_key,
+    sent = True
+    run_dir = os.path.expanduser("~/.ktclaw/intercom/gateway-runs")
+    os.makedirs(run_dir, exist_ok=True)
+    run_log = os.path.join(run_dir, "%s.json" % payload["idempotencyKey"].replace("/", "_"))
+    child_payload = dict(payload)
+    child_payload["runLog"] = run_log
+    child_payload_b64 = base64.b64encode(json.dumps(child_payload).encode("utf-8")).decode("ascii")
+    child_code = r'''
+import base64
+import json
+import os
+import time
+import urllib.request
+
+payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
+gateway_url = "http://127.0.0.1:18789/rpc"
+send_timeout = float(payload.get("sendHttpTimeoutSeconds") or 180)
+
+def write_log(value):
+    try:
+        with open(os.path.expanduser(payload["runLog"]), "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False)
+    except Exception:
+        pass
+
+def rpc(method, params, timeout=None):
+    body = json.dumps({
+        "type": "req",
+        "id": "intercom-send-%d" % time.time_ns(),
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        gateway_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout or send_timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("type") == "res":
+        if data.get("ok") is False or data.get("error"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("payload")
+    if isinstance(data, dict) and "ok" in data:
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("data", data)
+    return data
+
+try:
+    result = rpc("chat.send", {
+        "sessionKey": payload["sessionKey"],
         "message": payload["message"],
         "deliver": False,
         "idempotencyKey": payload["idempotencyKey"],
-    })
-    sent = True
+    }, send_timeout)
+    write_log({"ok": True, "result": result})
+except Exception as exc:
+    write_log({"ok": False, "error": str(exc)})
+'''
+    child_env = os.environ.copy()
+    child_env["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"] = child_payload_b64
+    subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=child_env,
+        start_new_session=True,
+    )
     deadline = time.time() + poll_timeout
     latest = before
     while time.time() < deadline:
@@ -1657,14 +1737,14 @@ try:
             if isinstance(message, dict) and message.get("role") == "assistant" and text_from_content(message.get("content")):
                 print(json.dumps({
                     "messages": new_messages,
-                    "result": send_result,
-                    "meta": {"via": "remote-gateway"},
+                    "result": {"dispatched": True, "runLog": run_log},
+                    "meta": {"via": "remote-gateway", "status": "completed", "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest)},
                 }, ensure_ascii=False))
                 sys.exit(0)
     print(json.dumps({
         "messages": latest[before_count:] if len(latest) >= before_count else latest,
-        "result": send_result,
-        "meta": {"via": "remote-gateway", "status": "timeout_waiting_for_history"},
+        "result": {"dispatched": True, "runLog": run_log},
+        "meta": {"via": "remote-gateway", "status": "running", "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest)},
     }, ensure_ascii=False))
 except Exception as exc:
     if not sent:
@@ -1691,6 +1771,133 @@ except Exception as exc:
 function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const fallbackCommand = buildRemoteOpenClawCommand(route, message, sessionId);
   return buildPosixRemoteGatewayCommand(route, message, sessionId, fallbackCommand);
+}
+
+function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: string, beforeCount: number): string {
+  return Buffer.from(JSON.stringify({
+    sessionKey: buildIntercomSessionKey(route, sessionId),
+    beforeCount: Math.max(0, Math.floor(beforeCount)),
+    httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+  }), 'utf8').toString('base64');
+}
+
+function buildPosixRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId: string, beforeCount: number): string {
+  const payloadBase64 = buildRemoteGatewayHistoryPayload(route, sessionId, beforeCount);
+  const pythonScript = `
+import base64
+import json
+import os
+import sys
+import time
+import urllib.request
+
+payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_HISTORY_PAYLOAD_B64"]).decode("utf-8"))
+gateway_url = "http://127.0.0.1:18789/rpc"
+http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
+
+def rpc(method, params, timeout=None):
+    body = json.dumps({
+        "type": "req",
+        "id": "intercom-history-%d" % time.time_ns(),
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        gateway_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout or http_timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("type") == "res":
+        if data.get("ok") is False or data.get("error"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("payload")
+    if isinstance(data, dict) and "ok" in data:
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("data", data)
+    return data
+
+def messages_from(value):
+    if isinstance(value, dict):
+        items = value.get("messages") or value.get("history")
+        return items if isinstance(items, list) else []
+    return value if isinstance(value, list) else []
+
+def text_from_content(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("content")
+                if isinstance(value, str):
+                    parts.append(value)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts).strip()
+    if isinstance(content, dict):
+        value = content.get("text") or content.get("content")
+        return value.strip() if isinstance(value, str) else ""
+    return ""
+
+try:
+    session_key = payload["sessionKey"]
+    before_count = int(payload.get("beforeCount") or 0)
+    latest = messages_from(rpc("chat.history", {"sessionKey": session_key, "limit": 500}))
+    new_messages = latest[before_count:] if len(latest) >= before_count else latest
+    status = "running"
+    for message in new_messages:
+        if isinstance(message, dict) and message.get("role") == "assistant" and text_from_content(message.get("content")):
+            status = "completed"
+            break
+    print(json.dumps({
+        "messages": new_messages,
+        "meta": {"via": "remote-gateway-poll", "status": status, "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest)},
+    }, ensure_ascii=False))
+except Exception as exc:
+    sys.stderr.write("Remote Gateway history unavailable: %s\\n" % exc)
+    sys.exit(${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE})
+`;
+  const script = [
+    `if command -v python3 >/dev/null 2>&1; then KTCLAW_INTERCOM_GATEWAY_HISTORY_PAYLOAD_B64=${quotePosix(payloadBase64)} python3 - <<'PY'`,
+    pythonScript.trim(),
+    'PY',
+    'exit $?',
+    'fi',
+    'echo "Remote Gateway history unavailable: python3 not found" >&2',
+    `exit ${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE}`,
+  ].join('\n');
+  return `sh -lc ${quotePosix(script)}`;
+}
+
+function buildWindowsRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId: string, beforeCount: number): string {
+  const payloadBase64 = buildRemoteGatewayHistoryPayload(route, sessionId, beforeCount);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}')) | ConvertFrom-Json`,
+    'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
+    '$body = @{ type = "req"; id = ("intercom-history-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
+    `$response = Invoke-RestMethod -Uri 'http://127.0.0.1:18789/rpc' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
+    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
+    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
+    'return $response',
+    '}',
+    'function Get-KTClawMessages { param($Value) if ($null -eq $Value) { return @() }; if ($Value.PSObject.Properties.Name -contains "messages") { return @($Value.messages) }; if ($Value.PSObject.Properties.Name -contains "history") { return @($Value.history) }; if ($Value -is [array]) { return @($Value) }; return @() }',
+    'function Get-KTClawText { param($Content) if ($null -eq $Content) { return "" }; if ($Content -is [string]) { return $Content.Trim() }; if ($Content -is [array]) { $parts = @(); foreach ($item in $Content) { if ($item -is [string]) { $parts += $item } elseif ($item.PSObject.Properties.Name -contains "text") { $parts += [string]$item.text } elseif ($item.PSObject.Properties.Name -contains "content") { $parts += [string]$item.content } }; return ([string]::Join("", $parts)).Trim() }; if ($Content.PSObject.Properties.Name -contains "text") { return ([string]$Content.text).Trim() }; if ($Content.PSObject.Properties.Name -contains "content") { return ([string]$Content.content).Trim() }; return "" }',
+    'function Get-KTClawNewMessages { param($Messages, [int]$Start) $items = @($Messages); if ($items.Count -le $Start) { return @() }; return @($items[$Start..($items.Count - 1)]) }',
+    '$beforeCount = [int]$payload.beforeCount',
+    '$sessionKey = [string]$payload.sessionKey',
+    '$latest = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" @{ sessionKey = $sessionKey; limit = 500 }))',
+    '$newMessages = @(Get-KTClawNewMessages $latest $beforeCount)',
+    '$status = "running"',
+    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { $status = "completed"; break } }',
+    '@{ messages = $newMessages; meta = @{ via = "remote-gateway-poll"; status = $status; beforeCount = $beforeCount; sessionKey = $sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress',
+  ].join('; ');
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
 }
 
 function shouldUseAutoRemoteCommand(route: IntercomRoute): boolean {
@@ -1743,6 +1950,25 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
   ];
   const argsBase64 = Buffer.from(JSON.stringify(remoteArgs), 'utf-8').toString('base64');
   const gatewayPayloadBase64 = buildRemoteGatewayPayload(route, message, sessionId);
+  const gatewaySendChildCommand = encodePowerShellCommand([
+    "$ErrorActionPreference = 'Stop'",
+    '$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64)) | ConvertFrom-Json',
+    'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params, [int]$TimeoutSec)',
+    '$body = @{ type = "req"; id = ("intercom-send-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
+    '$response = Invoke-RestMethod -Uri "http://127.0.0.1:18789/rpc" -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec',
+    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
+    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
+    'return $response',
+    '}',
+    'function Write-KTClawRunLog { param($Value) try { $Value | ConvertTo-Json -Depth 50 -Compress | Set-Content -LiteralPath ([string]$payload.runLog) -Encoding UTF8 } catch {} }',
+    'try {',
+    '$timeout = if ($payload.PSObject.Properties.Name -contains "sendHttpTimeoutSeconds") { [int]$payload.sendHttpTimeoutSeconds } else { 180 }',
+    '$result = Invoke-KTClawGatewayRpc "chat.send" @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; deliver = $false; idempotencyKey = [string]$payload.idempotencyKey } $timeout',
+    'Write-KTClawRunLog @{ ok = $true; result = $result }',
+    '} catch {',
+    'Write-KTClawRunLog @{ ok = $false; error = $_.Exception.Message }',
+    '}',
+  ].join('; '));
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$argsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${argsBase64}'))`,
@@ -1763,7 +1989,12 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     '$historyParams = @{ sessionKey = [string]$payload.sessionKey; limit = 500 }',
     '$before = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
     '$beforeCount = $before.Count',
-    '$sendResult = Invoke-KTClawGatewayRpc "chat.send" @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; deliver = $false; idempotencyKey = [string]$payload.idempotencyKey }',
+    "$runDir = Join-Path $HOME '.ktclaw\\intercom\\gateway-runs'",
+    'New-Item -ItemType Directory -Force -Path $runDir | Out-Null',
+    '$runLog = Join-Path $runDir ((([string]$payload.idempotencyKey) -replace "[\\\\/:*?`"<>|]", "_") + ".json")',
+    '$childPayload = @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; idempotencyKey = [string]$payload.idempotencyKey; runLog = $runLog; sendHttpTimeoutSeconds = [int]$payload.sendHttpTimeoutSeconds } | ConvertTo-Json -Depth 20 -Compress',
+    '$env:KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($childPayload))',
+    `Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", "${gatewaySendChildCommand}") -WindowStyle Hidden`,
     '$gatewayStarted = $true',
     '$deadline = [DateTime]::UtcNow.AddSeconds([double]$payload.timeoutSeconds)',
     '$latest = $before',
@@ -1771,10 +2002,10 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     'Start-Sleep -Seconds 1',
     '$latest = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
     '$newMessages = @(Get-KTClawNewMessages $latest $beforeCount)',
-    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { @{ messages = $newMessages; result = $sendResult; meta = @{ via = "remote-gateway" } } | ConvertTo-Json -Depth 50 -Compress; exit 0 } }',
+    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { @{ messages = $newMessages; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "completed"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress; exit 0 } }',
     '}',
     '$remaining = @(Get-KTClawNewMessages $latest $beforeCount)',
-    '@{ messages = $remaining; result = $sendResult; meta = @{ via = "remote-gateway"; status = "timeout_waiting_for_history" } } | ConvertTo-Json -Depth 50 -Compress',
+    '@{ messages = $remaining; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "running"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress',
     'exit 0',
     '} catch {',
     'if ($gatewayStarted) { @{ messages = @(@{ role = "assistant"; content = ("Remote Gateway run failed: " + $_.Exception.Message) }); meta = @{ via = "remote-gateway"; error = $_.Exception.Message } } | ConvertTo-Json -Depth 20 -Compress; exit 0 }',
@@ -2346,6 +2577,53 @@ function buildIntercomSessionKey(route: IntercomRoute, sessionId: string): strin
   const agent = safeRemotePathPart(route.agent || 'main', 'main');
   const session = safeRemotePathPart(normalizeString(sessionId) || DEFAULT_SESSION_ID, DEFAULT_SESSION_ID);
   return `agent:${agent}:${session}`;
+}
+
+type IntercomGatewayStatus = 'running' | 'completed' | 'timeout_waiting_for_history';
+
+function normalizeIntercomGatewayStatus(value: unknown): IntercomGatewayStatus | null {
+  if (value === 'running' || value === 'completed' || value === 'timeout_waiting_for_history') {
+    return value;
+  }
+  return null;
+}
+
+function readIntercomGatewayMeta(output: { stdout: string; stderr: string }): {
+  status: IntercomGatewayStatus | null;
+  beforeCount: number | null;
+  sessionKey: string | null;
+} {
+  const parsed = parseIntercomJson(output.stdout) ?? parseIntercomJson(output.stderr);
+  if (!isRecord(parsed) || !isRecord(parsed.meta)) {
+    return { status: null, beforeCount: null, sessionKey: null };
+  }
+  const beforeCount = typeof parsed.meta.beforeCount === 'number' && Number.isFinite(parsed.meta.beforeCount)
+    ? Math.max(0, Math.floor(parsed.meta.beforeCount))
+    : null;
+  return {
+    status: normalizeIntercomGatewayStatus(parsed.meta.status),
+    beforeCount,
+    sessionKey: normalizeString(parsed.meta.sessionKey) || null,
+  };
+}
+
+function buildIntercomSendPollState(
+  sessionId: string,
+  commandResult: { stdout: string; stderr: string },
+): Pick<IntercomSendResult, 'pending' | 'poll'> {
+  const meta = readIntercomGatewayMeta(commandResult);
+  const status = meta.status;
+  if (!status || status === 'completed' || meta.beforeCount === null) {
+    return {};
+  }
+  return {
+    pending: true,
+    poll: {
+      sessionId,
+      beforeCount: meta.beforeCount,
+      status,
+    },
+  };
 }
 
 async function resolveIntercomTarget(target: string): Promise<{
@@ -3339,6 +3617,7 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
     message: finalMessage,
     sessionId,
   });
+  const pollState = buildIntercomSendPollState(actualSessionId, commandResult);
 
   return {
     success: true,
@@ -3355,6 +3634,75 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
     stdout: commandResult.stdout,
     stderr: commandResult.stderr,
     durationMs: commandResult.durationMs,
+    ...pollState,
+  };
+}
+
+export async function pollIntercomMessage(input: IntercomPollInput): Promise<IntercomSendResult> {
+  const target = normalizeRouteId(input.target);
+  const { snapshot, route } = await resolveIntercomTarget(target);
+  if (route.transport === 'nats') {
+    throw new Error('NATS intercom transport is not implemented yet');
+  }
+  if (route.transport !== 'ssh') {
+    throw new Error('Remote Gateway polling requires an SSH intercom route');
+  }
+
+  const sessionId = normalizeString(input.sessionId) || route.sessionId || snapshot.defaultSessionId;
+  const beforeCount = typeof input.beforeCount === 'number' && Number.isFinite(input.beforeCount)
+    ? Math.max(0, Math.floor(input.beforeCount))
+    : 0;
+  const sshPassword = await getIntercomSshPassword(route.id);
+  const runPollOnce = async (options: { windowsAuto?: boolean } = {}) => {
+    const remoteCommand = options.windowsAuto
+      ? buildWindowsRemoteGatewayHistoryCommand(route, sessionId, beforeCount)
+      : buildPosixRemoteGatewayHistoryCommand(route, sessionId, beforeCount);
+    const invocation = sshPassword
+      ? {
+          command: 'ssh2',
+          args: [
+            `${resolveSshHostAndUsername(route).username || userInfo().username}@${resolveSshHostAndUsername(route).host}`,
+            remoteCommand,
+          ],
+        }
+      : buildRawSshCommand(route, remoteCommand);
+    const commandResult = sshPassword
+      ? await runSsh2RawCommand(route, sshPassword, remoteCommand, 20_000)
+      : await runIntercomCommand(invocation.command, invocation.args, {
+          cwd: 'cwd' in invocation ? invocation.cwd : undefined,
+          env: 'env' in invocation ? invocation.env : process.env,
+          timeoutMs: 20_000,
+        });
+    return { invocation, commandResult };
+  };
+
+  let pollResult: Awaited<ReturnType<typeof runPollOnce>>;
+  try {
+    pollResult = await runPollOnce();
+  } catch (error) {
+    if (!shouldRetryWithAutoRemoteDiscovery(route, error)) {
+      throw error;
+    }
+    pollResult = await runPollOnce({ windowsAuto: true });
+  }
+  const pollState = buildIntercomSendPollState(sessionId, pollResult.commandResult);
+
+  return {
+    success: true,
+    queued: false,
+    target,
+    sender: 'ktclaw',
+    transport: route.transport,
+    host: route.host,
+    agent: route.agent,
+    sessionId,
+    command: pollResult.invocation.command,
+    args: pollResult.invocation.args,
+    exitCode: pollResult.commandResult.exitCode,
+    stdout: pollResult.commandResult.stdout,
+    stderr: pollResult.commandResult.stderr,
+    durationMs: pollResult.commandResult.durationMs,
+    ...pollState,
   };
 }
 

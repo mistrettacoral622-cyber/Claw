@@ -540,6 +540,92 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('ktclaw-intercom');
   });
 
+  it('returns a pending poll cursor when the remote Gateway dispatch is still running', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: JSON.stringify({
+        messages: [],
+        result: { dispatched: true },
+        meta: {
+          via: 'remote-gateway',
+          status: 'running',
+          beforeCount: 12,
+          sessionKey: 'agent:ops:intercom',
+        },
+      }),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    expect(result.pending).toBe(true);
+    expect(result.poll).toEqual({
+      sessionId: 'intercom',
+      beforeCount: 12,
+      status: 'running',
+    });
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('subprocess.Popen');
+    expect(sshArgs.at(-1)).toContain('sendHttpTimeoutSeconds');
+  });
+
+  it('polls remote Gateway history without starting an OpenClaw CLI fallback', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: JSON.stringify({
+        messages: [{ role: 'assistant', content: [{ text: 'pong' }] }],
+        meta: {
+          via: 'remote-gateway-poll',
+          status: 'completed',
+          beforeCount: 12,
+          sessionKey: 'agent:ops:intercom',
+        },
+      }),
+    }));
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'openclaw',
+          },
+        },
+      },
+    };
+    const { pollIntercomMessage } = await import('@electron/services/intercom');
+
+    const result = await pollIntercomMessage({
+      target: 'ops',
+      sessionId: 'intercom',
+      beforeCount: 12,
+    });
+
+    expect(result.pending).toBeUndefined();
+    expect(result.stdout).toContain('pong');
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('chat.history');
+    expect(sshArgs.at(-1)).not.toContain(' agent --local ');
+    expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
+  });
+
   it('retries legacy openclaw routes with the bundled Linux KTClaw command when the wrapper points at /usr/ktclaw', async () => {
     spawnMock
       .mockReturnValueOnce(createProcessMock({
