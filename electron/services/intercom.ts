@@ -27,6 +27,7 @@ export interface IntercomRoute {
   sshPort?: number;
   sshPasswordConfigured?: boolean;
   remoteCommand?: string;
+  remoteGatewayPort?: number;
   source: 'config' | 'local';
 }
 
@@ -45,6 +46,7 @@ export interface IntercomSelfConfig {
   agentId: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: number;
   routeIdExample: string;
   displayNameExample: string;
 }
@@ -70,6 +72,7 @@ export interface IntercomHostReadiness {
   agentId: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: number;
   checks: IntercomHostReadinessCheck[];
   prepareCommandPreview: string | null;
 }
@@ -96,6 +99,7 @@ export interface IntercomRouteInput {
   sshPassword?: string;
   clearSshPassword?: boolean;
   remoteCommand?: string;
+  remoteGatewayPort?: number | null;
 }
 
 export interface IntercomSendInput {
@@ -245,10 +249,11 @@ const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
 const INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS = 15;
-const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 7;
+const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 3;
 const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
 const INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS = 180;
 const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
+const DEFAULT_REMOTE_GATEWAY_PORT = 18789;
 const INTERCOM_SSH_SECRET_PREFIX = 'intercom:ssh:';
 const INTERCOM_CONFIG_FILE = join(getKTClawConfigDir(), 'intercom.json');
 const DEFAULT_REMOTE_OPENCLAW_COMMAND = 'openclaw';
@@ -677,6 +682,7 @@ function buildSelfConfig(
     agentId: agent.id,
     sessionId: getDefaultSessionId(config),
     remoteCommand: DEFAULT_REMOTE_OPENCLAW_COMMAND,
+    remoteGatewayPort: DEFAULT_REMOTE_GATEWAY_PORT,
     routeIdExample: `${shareHost}-${agent.id}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
     displayNameExample: `${hostname() || localHost} / ${agent.name || agent.id}`,
   };
@@ -907,6 +913,7 @@ function normalizeStoredRoute(
     sshPort: normalizePositiveInteger(value.sshPort),
     sshPasswordConfigured: passwordConfigured,
     remoteCommand: normalizeString(value.remoteCommand) || undefined,
+    remoteGatewayPort: normalizePositiveInteger(value.remoteGatewayPort),
     source: 'config',
   };
 }
@@ -932,6 +939,7 @@ function normalizeRouteForStorage(input: IntercomRouteInput, config: StoredInter
     sshPort: normalizePositiveInteger(input.sshPort),
     sshPasswordConfigured: false,
     remoteCommand: normalizeString(input.remoteCommand) || undefined,
+    remoteGatewayPort: normalizePositiveInteger(input.remoteGatewayPort),
     source: 'config',
   };
 }
@@ -947,6 +955,7 @@ function toStoredRoute(route: IntercomRoute): Partial<IntercomRouteInput> {
     ...(route.sshUser ? { sshUser: route.sshUser } : {}),
     ...(route.sshPort ? { sshPort: route.sshPort } : {}),
     ...(route.remoteCommand ? { remoteCommand: route.remoteCommand } : {}),
+    ...(route.remoteGatewayPort ? { remoteGatewayPort: route.remoteGatewayPort } : {}),
   };
 }
 
@@ -1546,6 +1555,10 @@ function resolveSshHostAndUsername(route: IntercomRoute): { host: string; userna
   };
 }
 
+function resolveRemoteGatewayPort(route: IntercomRoute): number {
+  return normalizePositiveInteger(route.remoteGatewayPort) || DEFAULT_REMOTE_GATEWAY_PORT;
+}
+
 function buildRemoteOpenClawCommand(route: IntercomRoute, message: string, sessionId: string): string {
   const remoteArgs = [
     'agent',
@@ -1575,6 +1588,7 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
     timeoutSeconds: INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS,
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
     sendHttpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS,
+    gatewayPort: resolveRemoteGatewayPort(route),
   }), 'utf8').toString('base64');
 }
 
@@ -1582,9 +1596,10 @@ function buildPosixRemoteGatewayCommand(
   route: IntercomRoute,
   message: string,
   sessionId: string,
-  fallbackCommand: string,
+  fallbackCommand: string | null,
 ): string {
   const payloadBase64 = buildRemoteGatewayPayload(route, message, sessionId);
+  const gatewayPort = resolveRemoteGatewayPort(route);
   const pythonScript = `
 import base64
 import json
@@ -1599,7 +1614,8 @@ import uuid
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
 poll_timeout = float(payload.get("timeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS})
-gateway_url = "http://127.0.0.1:18789/rpc"
+gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
+gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 sent = False
 
 def rpc(method, params, timeout=None):
@@ -1671,7 +1687,8 @@ import time
 import urllib.request
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
-gateway_url = "http://127.0.0.1:18789/rpc"
+gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
+gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 send_timeout = float(payload.get("sendHttpTimeoutSeconds") or 180)
 
 def write_log(value):
@@ -1763,14 +1780,28 @@ except Exception as exc:
     'if [ "$status" -eq 0 ]; then exit 0; fi',
     `if [ "$status" -ne ${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE} ]; then exit "$status"; fi`,
     'fi',
-    fallbackCommand,
+    fallbackCommand
+      ?? [
+        `echo "Remote Gateway is unavailable on 127.0.0.1:${gatewayPort}. Open KTClaw on the remote machine, confirm its Gateway port matches this route, and keep Gateway running; normal Intercom messages no longer cold-start openclaw agent automatically." >&2`,
+        `exit ${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE}`,
+      ].join('\n'),
   ].join('\n');
   return `sh -lc ${quotePosix(script)}`;
 }
 
-function buildRemoteCommand(route: IntercomRoute, message: string, sessionId: string): string {
+function buildRemoteCommand(
+  route: IntercomRoute,
+  message: string,
+  sessionId: string,
+  options: { allowCliFallback?: boolean } = {},
+): string {
   const fallbackCommand = buildRemoteOpenClawCommand(route, message, sessionId);
-  return buildPosixRemoteGatewayCommand(route, message, sessionId, fallbackCommand);
+  return buildPosixRemoteGatewayCommand(
+    route,
+    message,
+    sessionId,
+    options.allowCliFallback === false ? null : fallbackCommand,
+  );
 }
 
 function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: string, beforeCount: number): string {
@@ -1778,6 +1809,7 @@ function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: strin
     sessionKey: buildIntercomSessionKey(route, sessionId),
     beforeCount: Math.max(0, Math.floor(beforeCount)),
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+    gatewayPort: resolveRemoteGatewayPort(route),
   }), 'utf8').toString('base64');
 }
 
@@ -1792,7 +1824,8 @@ import time
 import urllib.request
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_HISTORY_PAYLOAD_B64"]).decode("utf-8"))
-gateway_url = "http://127.0.0.1:18789/rpc"
+gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
+gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
 
 def rpc(method, params, timeout=None):
@@ -1879,9 +1912,11 @@ function buildWindowsRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}')) | ConvertFrom-Json`,
+    `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
+    '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
     '$body = @{ type = "req"; id = ("intercom-history-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    `$response = Invoke-RestMethod -Uri 'http://127.0.0.1:18789/rpc' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
+    `$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
     'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
     'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
     'return $response',
@@ -1934,7 +1969,12 @@ function resolveRemoteCommandPrefix(route: IntercomRoute): string {
     : (route.remoteCommand || DEFAULT_REMOTE_OPENCLAW_COMMAND);
 }
 
-function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, sessionId: string): string {
+function buildWindowsAutoOpenClawCommand(
+  route: IntercomRoute,
+  message: string,
+  sessionId: string,
+  options: { allowCliFallback?: boolean } = {},
+): string {
   const remoteArgs = [
     'agent',
     '--local',
@@ -1953,9 +1993,11 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
   const gatewaySendChildCommand = encodePowerShellCommand([
     "$ErrorActionPreference = 'Stop'",
     '$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64)) | ConvertFrom-Json',
+    `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
+    '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params, [int]$TimeoutSec)',
     '$body = @{ type = "req"; id = ("intercom-send-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    '$response = Invoke-RestMethod -Uri "http://127.0.0.1:18789/rpc" -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec',
+    '$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec',
     'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
     'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
     'return $response',
@@ -1976,9 +2018,11 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     '$gatewayStarted = $false',
     'try {',
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${gatewayPayloadBase64}')) | ConvertFrom-Json`,
+    `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
+    '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
     '$body = @{ type = "req"; id = ("intercom-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    `$response = Invoke-RestMethod -Uri 'http://127.0.0.1:18789/rpc' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
+    `$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
     'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
     'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
     'return $response',
@@ -2010,6 +2054,12 @@ function buildWindowsAutoOpenClawCommand(route: IntercomRoute, message: string, 
     '} catch {',
     'if ($gatewayStarted) { @{ messages = @(@{ role = "assistant"; content = ("Remote Gateway run failed: " + $_.Exception.Message) }); meta = @{ via = "remote-gateway"; error = $_.Exception.Message } } | ConvertTo-Json -Depth 20 -Compress; exit 0 }',
     '}',
+    ...(options.allowCliFallback === false
+      ? [
+        'Write-Error "Remote Gateway is unavailable on $gatewayUrl. Open KTClaw on the remote machine, confirm its Gateway port matches this route, and keep Gateway running; normal Intercom messages no longer cold-start openclaw agent automatically."',
+        `exit ${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE}`,
+      ]
+      : []),
     '$cmd = Get-Command openclaw -ErrorAction SilentlyContinue',
     'if ($cmd) { & $cmd.Source @openclawArgs; exit $LASTEXITCODE }',
     '$candidatePaths = @(',
@@ -2647,6 +2697,7 @@ async function runIntercomRouteMessage(params: {
   route: IntercomRoute;
   message: string;
   sessionId: string;
+  allowCliFallback?: boolean;
 }): Promise<{
   route: IntercomRoute;
   sessionId: string;
@@ -2657,13 +2708,19 @@ async function runIntercomRouteMessage(params: {
   const runMessageOnce = async (
     message: string,
     route: IntercomRoute,
-    options: { windowsAuto?: boolean } = {},
+    options: { windowsAuto?: boolean; allowCliFallback?: boolean } = {
+      allowCliFallback: params.allowCliFallback,
+    },
     sessionId = params.sessionId,
   ) => {
     const runForMessage = async (targetRoute: IntercomRoute) => {
       const remoteCommand = options.windowsAuto
-        ? buildWindowsAutoOpenClawCommand(targetRoute, message, sessionId)
-        : buildRemoteCommand(targetRoute, message, sessionId);
+        ? buildWindowsAutoOpenClawCommand(targetRoute, message, sessionId, {
+            allowCliFallback: params.allowCliFallback,
+          })
+        : buildRemoteCommand(targetRoute, message, sessionId, {
+            allowCliFallback: params.allowCliFallback,
+          });
       const invocation = targetRoute.transport === 'ssh' && sshPassword
         ? {
             command: 'ssh2',
@@ -2672,11 +2729,17 @@ async function runIntercomRouteMessage(params: {
               remoteCommand,
             ],
           }
-        : targetRoute.transport === 'ssh'
-          ? buildSshCommand(targetRoute, message, sessionId, options)
+          : targetRoute.transport === 'ssh'
+          ? buildSshCommand(targetRoute, message, sessionId, {
+              ...options,
+              allowCliFallback: params.allowCliFallback,
+            })
           : buildLocalCommand(targetRoute, message, sessionId);
       const commandResult = targetRoute.transport === 'ssh' && sshPassword
-        ? await runSsh2Command(targetRoute, sshPassword, message, sessionId, options)
+        ? await runSsh2Command(targetRoute, sshPassword, message, sessionId, {
+            ...options,
+            allowCliFallback: params.allowCliFallback,
+          })
         : await runIntercomCommand(invocation.command, invocation.args, {
             cwd: 'cwd' in invocation ? invocation.cwd : undefined,
             env: 'env' in invocation ? invocation.env : process.env,
@@ -2693,7 +2756,10 @@ async function runIntercomRouteMessage(params: {
           host: params.route.host,
           agent: params.route.agent,
         });
-        return runMessageOnce(message, route, { windowsAuto: true }, sessionId);
+        return runMessageOnce(message, route, {
+          windowsAuto: true,
+          allowCliFallback: params.allowCliFallback,
+        }, sessionId);
       }
       if (!getIntercomErrorText(error).includes('KTClaw executable not found at /usr/ktclaw')) {
         throw error;
@@ -2703,7 +2769,10 @@ async function runIntercomRouteMessage(params: {
         host: params.route.host,
         agent: params.route.agent,
       });
-      return runMessageOnce(message, withBundledLinuxOpenClawCommand(route), options, sessionId);
+      return runMessageOnce(message, withBundledLinuxOpenClawCommand(route), {
+        ...options,
+        allowCliFallback: params.allowCliFallback,
+      }, sessionId);
     }
   };
 
@@ -2741,7 +2810,7 @@ function buildSshCommand(
   route: IntercomRoute,
   message: string,
   sessionId: string,
-  options: { windowsAuto?: boolean } = {},
+  options: { windowsAuto?: boolean; allowCliFallback?: boolean } = {},
 ) {
   const resolved = resolveSshHostAndUsername(route);
   const host = resolved.username ? `${resolved.username}@${resolved.host}` : resolved.host;
@@ -2761,8 +2830,12 @@ function buildSshCommand(
       ...(route.sshPort ? ['-p', String(route.sshPort)] : []),
       host,
       options.windowsAuto
-        ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
-        : buildRemoteCommand(route, message, sessionId),
+        ? buildWindowsAutoOpenClawCommand(route, message, sessionId, {
+            allowCliFallback: options.allowCliFallback,
+          })
+        : buildRemoteCommand(route, message, sessionId, {
+            allowCliFallback: options.allowCliFallback,
+          }),
     ],
     cwd: undefined,
     env: process.env,
@@ -2923,11 +2996,15 @@ async function runSsh2Command(
   password: string,
   message: string,
   sessionId: string,
-  options: { windowsAuto?: boolean } = {},
+  options: { windowsAuto?: boolean; allowCliFallback?: boolean } = {},
 ) {
   const remoteCommand = options.windowsAuto
-    ? buildWindowsAutoOpenClawCommand(route, message, sessionId)
-    : buildRemoteCommand(route, message, sessionId);
+    ? buildWindowsAutoOpenClawCommand(route, message, sessionId, {
+        allowCliFallback: options.allowCliFallback,
+      })
+    : buildRemoteCommand(route, message, sessionId, {
+        allowCliFallback: options.allowCliFallback,
+      });
   return runSsh2RawCommand(route, password, remoteCommand);
 }
 
@@ -3519,6 +3596,7 @@ export async function getIntercomHostReadiness(): Promise<IntercomHostReadiness>
     agentId: selfConfig.agentId,
     sessionId: selfConfig.sessionId,
     remoteCommand: selfConfig.remoteCommand,
+    remoteGatewayPort: selfConfig.remoteGatewayPort,
     checks,
     prepareCommandPreview,
   };
@@ -3616,6 +3694,7 @@ export async function sendIntercomMessage(input: IntercomSendInput): Promise<Int
     route,
     message: finalMessage,
     sessionId,
+    allowCliFallback: false,
   });
   const pollState = buildIntercomSendPollState(actualSessionId, commandResult);
 
@@ -3744,6 +3823,7 @@ export async function sendIntercomTask(input: IntercomRemoteTaskSendInput): Prom
     route,
     message: finalMessage,
     sessionId,
+    allowCliFallback: true,
   });
 
   return {

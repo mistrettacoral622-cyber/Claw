@@ -56,6 +56,7 @@ import {
   extractIntercomReplyMessages,
   looksLikeStructuredIntercomOutput,
   normalizeIntercomPort,
+  normalizeRemoteGatewayPort,
   parseIntercomConnectionShare,
   type IntercomRouteDraft,
 } from './intercom-ui-utils';
@@ -510,6 +511,7 @@ export function IntercomControlConsole() {
         sshPassword: routeDraft.sshPassword || undefined,
         clearSshPassword: routeDraft.clearSshPassword,
         remoteCommand: routeDraft.remoteCommand.trim() || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
+        remoteGatewayPort: normalizeRemoteGatewayPort(routeDraft.remoteGatewayPort) ?? 18789,
       });
       setSelectedRouteId(nextId);
       setConfigOpen(false);
@@ -1502,6 +1504,19 @@ export function IntercomControlConsole() {
                     placeholder="intercom"
                     value={routeDraft.sessionId}
                     onChange={(event) => setRouteDraft((current) => ({ ...current, sessionId: event.target.value }))}
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[12px] font-medium text-[#0f172a] dark:text-foreground">
+                    {t('remoteInstances.intercom.remoteGatewayPortLabel')}
+                  </span>
+                  <Input
+                    aria-label="Remote Gateway port"
+                    inputMode="numeric"
+                    placeholder="18789"
+                    value={routeDraft.remoteGatewayPort}
+                    onChange={(event) => setRouteDraft((current) => ({ ...current, remoteGatewayPort: event.target.value }))}
                   />
                 </label>
 

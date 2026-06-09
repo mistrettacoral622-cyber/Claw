@@ -641,6 +641,7 @@
       "sessionLabel": "Session",
       "sshUserLabel": "SSH user",
       "sshPortLabel": "SSH port",
+      "remoteGatewayPortLabel": "Remote Gateway port",
       "sshPasswordLabel": "SSH password",
       "passwordConfigured": "Saved",
       "passwordNotConfigured": "Not saved",

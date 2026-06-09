@@ -13,6 +13,7 @@ export type IntercomRouteDraft = {
   agent: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: string;
 };
 
 export const DEFAULT_INTERCOM_SESSION_ID = 'intercom';
@@ -34,6 +35,11 @@ type IntercomConnectionShare = {
   agentId?: string;
   sessionId?: string;
   remoteCommand?: string;
+  remoteGatewayPort?: number | string;
+  gatewayPort?: number | string;
+  gateway?: {
+    port?: number | string;
+  };
 };
 
 export function emptyIntercomRouteDraft(): IntercomRouteDraft {
@@ -49,6 +55,7 @@ export function emptyIntercomRouteDraft(): IntercomRouteDraft {
     agent: 'main',
     sessionId: DEFAULT_INTERCOM_SESSION_ID,
     remoteCommand: DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
+    remoteGatewayPort: '18789',
   };
 }
 
@@ -69,10 +76,11 @@ export function deriveIntercomRouteDraft(route: IntercomRoute | null): IntercomR
     agent: route.agent,
     sessionId: route.sessionId || DEFAULT_INTERCOM_SESSION_ID,
     remoteCommand: route.remoteCommand || DEFAULT_LINUX_KTCLAW_REMOTE_COMMAND,
+    remoteGatewayPort: route.remoteGatewayPort ? String(route.remoteGatewayPort) : '18789',
   };
 }
 
-export function normalizeIntercomPort(value: string): number | null {
+function normalizePort(value: string, label: string): number | null {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
@@ -80,10 +88,18 @@ export function normalizeIntercomPort(value: string): number | null {
 
   const parsed = Number(trimmed);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    throw new Error('SSH port must be a number between 1 and 65535');
+    throw new Error(`${label} must be a number between 1 and 65535`);
   }
 
   return parsed;
+}
+
+export function normalizeIntercomPort(value: string): number | null {
+  return normalizePort(value, 'SSH port');
+}
+
+export function normalizeRemoteGatewayPort(value: string): number | null {
+  return normalizePort(value, 'Remote Gateway port');
 }
 
 export function buildSshPreview(route: IntercomRouteDraft, message: string, sender: string): string {
@@ -146,6 +162,10 @@ export function parseIntercomConnectionShare(text: string): Partial<IntercomRout
     agent,
     sessionId: readShareString(payload.sessionId) || DEFAULT_INTERCOM_SESSION_ID,
     remoteCommand: readShareString(payload.remoteCommand) || DEFAULT_REMOTE_KTCLAW_COMMAND,
+    remoteGatewayPort: readSharePort(payload.remoteGatewayPort)
+      || readSharePort(payload.gatewayPort)
+      || readSharePort(payload.gateway?.port)
+      || '18789',
   };
 }
 

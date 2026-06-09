@@ -16,6 +16,7 @@ export type IntercomRoute = {
   sshPort: number | null;
   sshPasswordConfigured: boolean;
   remoteCommand: string | null;
+  remoteGatewayPort: number | null;
   source: 'config' | 'local';
 };
 
@@ -26,6 +27,7 @@ export type IntercomSelfConfig = {
   agentId: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: number;
   routeIdExample: string;
   displayNameExample: string;
 };
@@ -51,6 +53,7 @@ export type IntercomHostReadiness = {
   agentId: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: number;
   checks: IntercomHostReadinessCheck[];
   prepareCommandPreview: string | null;
 };
@@ -77,6 +80,7 @@ export type IntercomRouteInput = {
   sshPassword?: string;
   clearSshPassword?: boolean;
   remoteCommand?: string;
+  remoteGatewayPort?: number | null;
 };
 
 export type IntercomSendInput = {
@@ -270,6 +274,7 @@ function normalizeRoute(value: unknown): IntercomRoute | null {
     sshPort: typeof value.sshPort === 'number' && Number.isFinite(value.sshPort) ? value.sshPort : null,
     sshPasswordConfigured: value.sshPasswordConfigured === true,
     remoteCommand: readString(value.remoteCommand),
+    remoteGatewayPort: typeof value.remoteGatewayPort === 'number' && Number.isFinite(value.remoteGatewayPort) ? value.remoteGatewayPort : null,
     source: value.source === 'config' ? 'config' : 'local',
   };
 }
@@ -292,6 +297,7 @@ function normalizeSelfConfig(value: unknown): IntercomSelfConfig | null {
     agentId,
     sessionId: readString(value.sessionId) ?? 'intercom',
     remoteCommand: readString(value.remoteCommand) ?? 'openclaw',
+    remoteGatewayPort: typeof value.remoteGatewayPort === 'number' && Number.isFinite(value.remoteGatewayPort) ? value.remoteGatewayPort : 18789,
     routeIdExample: readString(value.routeIdExample) ?? agentId,
     displayNameExample: readString(value.displayNameExample) ?? agentId,
   };
@@ -351,6 +357,7 @@ function normalizeHostReadiness(value: unknown): IntercomHostReadiness | null {
     agentId,
     sessionId: readString(value.sessionId) ?? 'intercom',
     remoteCommand: readString(value.remoteCommand) ?? 'openclaw',
+    remoteGatewayPort: typeof value.remoteGatewayPort === 'number' && Number.isFinite(value.remoteGatewayPort) ? value.remoteGatewayPort : 18789,
     checks: Array.isArray(value.checks)
       ? value.checks.map(normalizeHostReadinessCheck).filter((entry): entry is IntercomHostReadinessCheck => entry !== null)
       : [],
@@ -406,6 +413,7 @@ function normalizeHostPrepareResult(value: unknown): IntercomHostPrepareResult {
       agentId: 'main',
       sessionId: 'intercom',
       remoteCommand: 'openclaw',
+      remoteGatewayPort: 18789,
       checks: [],
       prepareCommandPreview: null,
     },

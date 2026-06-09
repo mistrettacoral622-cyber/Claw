@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useIntercomStore, type IntercomRoute } from '@/stores/intercom';
+import { useSettingsStore } from '@/stores/settings';
 import { toast } from '@/lib/toast';
 import { INTERCOM_CONNECTION_SHARE_TYPE } from '@/components/remote-instances/intercom-ui-utils';
 
@@ -44,6 +45,7 @@ function buildConnectionShareText(config: {
   agentId: string;
   sessionId: string;
   remoteCommand: string;
+  remoteGatewayPort: number;
   routeIdExample: string;
   displayNameExample: string;
 }): string {
@@ -58,6 +60,7 @@ function buildConnectionShareText(config: {
     agent: config.agentId,
     sessionId: config.sessionId,
     remoteCommand: config.remoteCommand || 'openclaw',
+    remoteGatewayPort: config.remoteGatewayPort,
   }, null, 2);
 }
 
@@ -70,6 +73,7 @@ export function SettingsRemoteInstancesPanel() {
   const defaultSessionId = useIntercomStore((state) => state.defaultSessionId);
   const selfConfig = useIntercomStore((state) => state.selfConfig);
   const hostReadiness = useIntercomStore((state) => state.hostReadiness);
+  const gatewayPort = useSettingsStore((state) => state.gatewayPort);
   const loading = useIntercomStore((state) => state.loading);
   const installingProtocol = useIntercomStore((state) => state.installingProtocol);
   const preparingHost = useIntercomStore((state) => state.preparingHost);
@@ -148,7 +152,10 @@ export function SettingsRemoteInstancesPanel() {
         toast.error(t('remoteInstances.intercom.toasts.connectionInfoCopyFailed'));
         return;
       }
-      await navigator.clipboard.writeText(buildConnectionShareText(selfConfig));
+      await navigator.clipboard.writeText(buildConnectionShareText({
+        ...selfConfig,
+        remoteGatewayPort: gatewayPort || selfConfig.remoteGatewayPort || 18789,
+      }));
       toast.success(t('remoteInstances.intercom.toasts.connectionInfoCopied'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('remoteInstances.intercom.toasts.connectionInfoCopyFailed'));
@@ -389,6 +396,14 @@ export function SettingsRemoteInstancesPanel() {
                   </p>
                   <p className="mt-1 font-mono text-[12px] text-[#0f172a] dark:text-foreground">
                     {selfConfig?.sessionId || defaultSessionId || 'intercom'}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.04em] text-[#64748b] dark:text-muted-foreground">
+                    {t('remoteInstances.intercom.remoteGatewayPortLabel')}
+                  </p>
+                  <p className="mt-1 font-mono text-[12px] text-[#0f172a] dark:text-foreground">
+                    {gatewayPort || selfConfig?.remoteGatewayPort || 18789}
                   </p>
                 </div>
                 <div className="rounded-lg bg-white px-3 py-3 dark:bg-background">

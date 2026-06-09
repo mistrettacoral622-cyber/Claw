@@ -241,6 +241,7 @@ describe('RemoteInstances page', () => {
           sshPassword: 'secret',
           clearSshPassword: false,
           remoteCommand: 'openclaw',
+          remoteGatewayPort: 18789,
         }),
       }),
     );
@@ -258,6 +259,7 @@ describe('RemoteInstances page', () => {
       agent: 'main',
       sessionId: 'intercom',
       remoteCommand: 'openclaw',
+      remoteGatewayPort: 24567,
     }));
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,

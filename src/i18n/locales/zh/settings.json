@@ -607,6 +607,7 @@
       "sessionLabel": "Session",
       "sshUserLabel": "SSH User",
       "sshPortLabel": "SSH Port",
+      "remoteGatewayPortLabel": "远端 Gateway 端口",
       "sshPasswordLabel": "SSH 密码",
       "passwordConfigured": "已保存",
       "passwordNotConfigured": "未保存",

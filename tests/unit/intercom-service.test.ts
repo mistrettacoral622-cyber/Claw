@@ -71,6 +71,16 @@ function createProcessMock(options: {
   };
 }
 
+function extractGatewayPayload(command: string): Record<string, unknown> {
+  const marker = 'KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64=';
+  const index = command.indexOf(marker);
+  expect(index).toBeGreaterThanOrEqual(0);
+  const fragment = command.slice(index + marker.length);
+  const match = fragment.match(/[A-Za-z0-9+/=]{24,}/);
+  expect(match?.[0]).toBeTruthy();
+  return JSON.parse(Buffer.from(match![0], 'base64').toString('utf8')) as Record<string, unknown>;
+}
+
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
@@ -453,37 +463,51 @@ describe('intercom service', () => {
       exitCode: 0,
       stdout: '{"ok":true}',
     }));
-    expect(spawnMock).toHaveBeenCalledWith(
-      'ssh',
-      [
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'StrictHostKeyChecking=accept-new',
-        '-o',
-        'ConnectTimeout=10',
-        '-o',
-        'ConnectionAttempts=1',
-        '-o',
-        'NumberOfPasswordPrompts=0',
-        '-p',
-        '2222',
-        'ubuntu@srv-c',
-        expect.stringContaining('http://127.0.0.1:18789/rpc'),
-      ],
-      expect.objectContaining({
-        detached: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      }),
-    );
+    const [command, args, options] = spawnMock.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(command).toBe('ssh');
+    expect(args.slice(0, -1)).toEqual([
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      'ConnectTimeout=10',
+      '-o',
+      'ConnectionAttempts=1',
+      '-o',
+      'NumberOfPasswordPrompts=0',
+      '-p',
+      '2222',
+      'ubuntu@srv-c',
+    ]);
+    expect(options).toEqual(expect.objectContaining({
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    }));
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
-    expect(sshArgs.at(-1)).toContain('agent:ops:intercom');
-    expect(sshArgs.at(-1)).toContain('[from agent dev] 更新头像');
+    expect(sshArgs.at(-1)).toContain('chat.send');
+    expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
+    expect(sshArgs.at(-1)).not.toContain(' agent --local ');
+    const payload = extractGatewayPayload(sshArgs.at(-1) ?? '');
+    expect(payload).toEqual(expect.objectContaining({
+      sessionKey: 'agent:ops:intercom',
+      message: '[from agent dev] 更新头像',
+      gatewayPort: 18789,
+    }));
   });
 
-  it('allows a remote OpenClaw command prefix with arguments', async () => {
+  it('keeps the remote OpenClaw command prefix available for task CLI fallback', async () => {
+    spawnMock.mockReturnValueOnce(createProcessMock({
+      stdout: JSON.stringify({
+        success: true,
+        summary: 'Task completed',
+        artifacts: [],
+        logs: '',
+        error: null,
+      }),
+    }));
     configStore.current = {
       intercom: {
         agents: {
@@ -497,21 +521,23 @@ describe('intercom service', () => {
         },
       },
     };
-    const { sendIntercomMessage } = await import('@electron/services/intercom');
+    const { sendIntercomTask } = await import('@electron/services/intercom');
 
-    await sendIntercomMessage({
+    await sendIntercomTask({
       sender: 'dev',
       target: 'ops',
-      message: 'ping',
+      taskId: 'task-prefix',
+      action: 'remote_task',
+      payload: { instruction: 'ping' },
+      return: ['summary', 'artifacts', 'logs'],
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain('http://127.0.0.1:18789/rpc');
     expect(sshArgs.at(-1)).toContain('/opt/KTClaw/ktclaw');
     expect(sshArgs.at(-1)).toContain('/opt/KTClaw/resources/openclaw/openclaw.mjs');
   });
 
-  it('tries the remote Gateway fast path before falling back to a local remote agent call', async () => {
+  it('tries the remote Gateway fast path without cold-starting CLI for normal messages', async () => {
     configStore.current = {
       intercom: {
         agents: {
@@ -534,10 +560,41 @@ describe('intercom service', () => {
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
-    expect(sshArgs.at(-1)).toContain('http://127.0.0.1:18789/rpc');
     expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
-    expect(sshArgs.at(-1)).toContain('agent:ops:intercom');
-    expect(sshArgs.at(-1)).toContain('ktclaw-intercom');
+    expect(sshArgs.at(-1)).toContain('normal Intercom messages no longer cold-start openclaw agent automatically');
+    expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
+    expect(sshArgs.at(-1)).not.toContain(' agent --local ');
+  });
+
+  it('uses the configured remote Gateway port for fast-path chat', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteGatewayPort: 24567,
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    const payload = extractGatewayPayload(sshArgs.at(-1) ?? '');
+    expect(payload).toEqual(expect.objectContaining({
+      gatewayPort: 24567,
+      sessionKey: 'agent:ops:intercom',
+    }));
+    expect(sshArgs.at(-1)).toContain('127.0.0.1:24567');
   });
 
   it('returns a pending poll cursor when the remote Gateway dispatch is still running', async () => {
@@ -646,12 +703,15 @@ describe('intercom service', () => {
         },
       },
     };
-    const { sendIntercomMessage } = await import('@electron/services/intercom');
+    const { sendIntercomTask } = await import('@electron/services/intercom');
 
-    const result = await sendIntercomMessage({
+    const result = await sendIntercomTask({
       sender: 'dev',
       target: 'ops',
-      message: 'ping',
+      taskId: 'task-retry',
+      action: 'remote_task',
+      payload: { instruction: 'ping' },
+      return: ['summary', 'artifacts', 'logs'],
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -662,7 +722,7 @@ describe('intercom service', () => {
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
     expect(retryArgs.at(-1)).toContain('/opt/KTClaw/ktclaw');
     expect(retryArgs.at(-1)).toContain('/opt/KTClaw/resources/openclaw/openclaw.mjs');
-    expect(retryArgs.at(-1)).toContain('agent:ops:intercom');
+    expect(retryArgs.at(-1)).toContain('agent:ops:intercom-task-task-retry');
   });
 
   it('runs discovered POSIX openclaw scripts through sh when execute permission is missing', async () => {
@@ -679,12 +739,15 @@ describe('intercom service', () => {
         },
       },
     };
-    const { sendIntercomMessage } = await import('@electron/services/intercom');
+    const { sendIntercomTask } = await import('@electron/services/intercom');
 
-    await sendIntercomMessage({
+    await sendIntercomTask({
       sender: 'dev',
       target: 'ops',
-      message: 'ping',
+      taskId: 'task-posix-script',
+      action: 'remote_task',
+      payload: { instruction: 'ping' },
+      return: ['summary', 'artifacts', 'logs'],
     });
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
@@ -795,9 +858,10 @@ describe('intercom service', () => {
     expect(result.sessionId).toMatch(/^intercom-text-[a-f0-9]{8}$/);
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
-    expect(retryArgs.at(-1)).toContain('intercom-text-');
-    expect(retryArgs.at(-1)).toContain('agent:ops:intercom-text-');
-    expect(retryArgs.at(-1)).toContain("[from agent dev] 你好");
+    const retryPayload = extractGatewayPayload(retryArgs.at(-1) ?? '');
+    expect(retryPayload.sessionKey).toMatch(/^agent:ops:intercom-text-[a-f0-9]{8}$/);
+    expect(retryPayload.message).toBe('[from agent dev] 你好');
+    expect(retryArgs.at(-1)).not.toContain('ktclaw-intercom');
   });
 
   it('sends password-backed SSH intercom messages through ssh2', async () => {
@@ -839,14 +903,14 @@ describe('intercom service', () => {
       username: 'ubuntu',
       password: 'linux-password',
     }));
-    expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining('http://127.0.0.1:18789/rpc'),
-      expect.any(Function),
-    );
-    expect(sshClientInstances[0]?.exec).toHaveBeenCalledWith(
-      expect.stringContaining('agent:ops:intercom'),
-      expect.any(Function),
-    );
+    const remoteCommand = sshClientInstances[0]?.exec.mock.calls[0]?.[0] as string;
+    expect(remoteCommand).toContain('gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port');
+    const payload = extractGatewayPayload(remoteCommand);
+    expect(payload).toEqual(expect.objectContaining({
+      sessionKey: 'agent:ops:intercom',
+      gatewayPort: 18789,
+    }));
+    expect(remoteCommand).not.toContain('ktclaw-intercom');
   });
 
   it('builds structured remote task messages and normalizes task results', async () => {
