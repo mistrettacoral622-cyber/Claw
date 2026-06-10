@@ -568,6 +568,8 @@ describe('intercom service', () => {
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
     expect(sshArgs.at(-1)).toContain('GET /ws HTTP/1.1');
+    expect(sshArgs.at(-1)).toContain('"id": "gateway-client"');
+    expect(sshArgs.at(-1)).toContain('"mode": "ui"');
     expect(sshArgs.at(-1)).toContain('normal Intercom messages no longer cold-start openclaw agent automatically');
     expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
     expect(sshArgs.at(-1)).not.toContain(' agent --local ');
@@ -831,7 +833,10 @@ describe('intercom service', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
     expect(retryArgs.at(-1)).toContain('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand');
-    expect(extractPowerShellEncodedCommand(retryArgs.at(-1) ?? '')).toContain('Connect-KTClawGatewayWs');
+    const windowsScript = extractPowerShellEncodedCommand(retryArgs.at(-1) ?? '');
+    expect(windowsScript).toContain('Connect-KTClawGatewayWs');
+    expect(windowsScript).toContain('id = "gateway-client"');
+    expect(windowsScript).toContain('mode = "ui"');
   });
 
   it('retries intercom messages with a clean session when stale history contains image_url content', async () => {
@@ -915,6 +920,8 @@ describe('intercom service', () => {
     const remoteCommand = sshClientInstances[0]?.exec.mock.calls[0]?.[0] as string;
     expect(remoteCommand).toContain('gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port');
     expect(remoteCommand).toContain('GET /ws HTTP/1.1');
+    expect(remoteCommand).toContain('"id": "gateway-client"');
+    expect(remoteCommand).toContain('"mode": "ui"');
     const payload = extractGatewayPayload(remoteCommand);
     expect(payload).toEqual(expect.objectContaining({
       sessionKey: 'agent:ops:intercom',
