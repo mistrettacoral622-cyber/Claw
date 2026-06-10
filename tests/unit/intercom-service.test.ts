@@ -81,6 +81,12 @@ function extractGatewayPayload(command: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(match![0], 'base64').toString('utf8')) as Record<string, unknown>;
 }
 
+function extractPowerShellEncodedCommand(command: string): string {
+  const match = command.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+  expect(match?.[1]).toBeTruthy();
+  return Buffer.from(match![1], 'base64').toString('utf16le');
+}
+
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
@@ -561,6 +567,7 @@ describe('intercom service', () => {
 
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
+    expect(sshArgs.at(-1)).toContain('GET /ws HTTP/1.1');
     expect(sshArgs.at(-1)).toContain('normal Intercom messages no longer cold-start openclaw agent automatically');
     expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
     expect(sshArgs.at(-1)).not.toContain(' agent --local ');
@@ -593,6 +600,7 @@ describe('intercom service', () => {
     expect(payload).toEqual(expect.objectContaining({
       gatewayPort: 24567,
       sessionKey: 'agent:ops:intercom',
+      timeoutSeconds: 30,
     }));
     expect(sshArgs.at(-1)).toContain('127.0.0.1:24567');
   });
@@ -823,6 +831,7 @@ describe('intercom service', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     const retryArgs = spawnMock.mock.calls[1][1] as string[];
     expect(retryArgs.at(-1)).toContain('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand');
+    expect(extractPowerShellEncodedCommand(retryArgs.at(-1) ?? '')).toContain('Connect-KTClawGatewayWs');
   });
 
   it('retries intercom messages with a clean session when stale history contains image_url content', async () => {
@@ -905,6 +914,7 @@ describe('intercom service', () => {
     }));
     const remoteCommand = sshClientInstances[0]?.exec.mock.calls[0]?.[0] as string;
     expect(remoteCommand).toContain('gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port');
+    expect(remoteCommand).toContain('GET /ws HTTP/1.1');
     const payload = extractGatewayPayload(remoteCommand);
     expect(payload).toEqual(expect.objectContaining({
       sessionKey: 'agent:ops:intercom',

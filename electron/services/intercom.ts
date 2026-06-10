@@ -249,7 +249,7 @@ const INTERCOM_DESKTOP_CAMERA_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_CAMERA_WAIT_SECONDS = 30;
 const INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS = 15;
-const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 3;
+const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 30;
 const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
 const INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS = 180;
 const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
@@ -1592,6 +1592,281 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
   }), 'utf8').toString('base64');
 }
 
+function buildPythonGatewayRpcHelper(): string {
+  return `
+import hashlib
+import socket
+import struct
+
+_gateway_ws_client = None
+
+def _read_gateway_token():
+    token = os.environ.get("OPENCLAW_GATEWAY_TOKEN") or os.environ.get("KTCLAW_GATEWAY_TOKEN")
+    if token:
+        return token
+    candidates = [
+        os.path.expanduser("~/.openclaw/openclaw.json"),
+        os.path.expanduser("~/.config/openclaw/openclaw.json"),
+    ]
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+            gateway = config.get("gateway") if isinstance(config, dict) else {}
+            auth = gateway.get("auth") if isinstance(gateway, dict) else {}
+            remote = gateway.get("remote") if isinstance(gateway, dict) else {}
+            for value in (
+                auth.get("token") if isinstance(auth, dict) else None,
+                remote.get("token") if isinstance(remote, dict) else None,
+            ):
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        except Exception:
+            pass
+    return ""
+
+def _recv_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise RuntimeError("WebSocket connection closed")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def _mask_payload(payload, mask):
+    return bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+
+class _GatewayWsClient:
+    def __init__(self, host, port, token, timeout):
+        self.host = host
+        self.port = port
+        self.token = token or ""
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = (
+            "GET /ws HTTP/1.1\\r\\n"
+            "Host: %s:%d\\r\\n"
+            "Upgrade: websocket\\r\\n"
+            "Connection: Upgrade\\r\\n"
+            "Sec-WebSocket-Key: %s\\r\\n"
+            "Sec-WebSocket-Version: 13\\r\\n"
+            "\\r\\n"
+        ) % (host, port, key)
+        self.sock.sendall(request.encode("ascii"))
+        response = b""
+        while b"\\r\\n\\r\\n" not in response:
+            response += _recv_exact(self.sock, 1)
+            if len(response) > 8192:
+                raise RuntimeError("WebSocket handshake response too large")
+        status_line = response.split(b"\\r\\n", 1)[0].decode("latin1", errors="replace")
+        if " 101 " not in status_line:
+            raise RuntimeError("WebSocket handshake failed: %s" % status_line)
+        challenge = self.recv_json(timeout)
+        if not (isinstance(challenge, dict) and challenge.get("type") == "event" and challenge.get("event") == "connect.challenge"):
+            raise RuntimeError("WebSocket did not send connect.challenge")
+        challenge_payload = challenge.get("payload") if isinstance(challenge.get("payload"), dict) else {}
+        nonce = challenge_payload.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            raise RuntimeError("WebSocket connect.challenge missing nonce")
+        connect_id = "connect-%d" % time.time_ns()
+        self.send_json({
+            "type": "req",
+            "id": connect_id,
+            "method": "connect",
+            "params": {
+                "minProtocol": 3,
+                "maxProtocol": 3,
+                "client": {
+                    "id": "ktclaw-ssh-rpc",
+                    "displayName": "KTClaw SSH RPC",
+                    "version": "0.1.0",
+                    "platform": sys.platform,
+                    "mode": "intercom",
+                },
+                "auth": {"token": self.token},
+                "caps": [],
+                "role": "operator",
+                "scopes": ["operator.admin"],
+            },
+        })
+        self._wait_response(connect_id, timeout)
+
+    def close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+
+    def send_frame(self, payload, opcode=1):
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        length = len(payload)
+        header = bytearray([0x80 | opcode])
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+        mask = os.urandom(4)
+        header.extend(mask)
+        self.sock.sendall(bytes(header) + _mask_payload(payload, mask))
+
+    def send_json(self, value):
+        self.send_frame(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+    def recv_text(self, timeout):
+        self.sock.settimeout(timeout)
+        fragments = []
+        while True:
+            header = _recv_exact(self.sock, 2)
+            first = header[0]
+            second = header[1]
+            fin = (first & 0x80) != 0
+            opcode = first & 0x0F
+            masked = (second & 0x80) != 0
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", _recv_exact(self.sock, 2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", _recv_exact(self.sock, 8))[0]
+            mask = _recv_exact(self.sock, 4) if masked else None
+            payload = _recv_exact(self.sock, length) if length else b""
+            if mask:
+                payload = _mask_payload(payload, mask)
+            if opcode == 8:
+                raise RuntimeError("WebSocket closed by Gateway")
+            if opcode == 9:
+                self.send_frame(payload, opcode=10)
+                continue
+            if opcode in (1, 0):
+                fragments.append(payload)
+                if fin:
+                    return b"".join(fragments).decode("utf-8")
+            elif opcode == 10:
+                continue
+
+    def recv_json(self, timeout):
+        return json.loads(self.recv_text(timeout))
+
+    def _wait_response(self, request_id, timeout):
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise RuntimeError("WebSocket RPC timeout: %s" % request_id)
+            message = self.recv_json(max(0.1, remaining))
+            if not isinstance(message, dict) or message.get("id") != request_id:
+                continue
+            if message.get("type") == "res":
+                if message.get("ok") is False or message.get("error"):
+                    raise RuntimeError(str(message.get("error") or "Gateway WebSocket RPC failed"))
+                return message.get("payload")
+            if "ok" in message:
+                if not message.get("ok"):
+                    raise RuntimeError(str(message.get("error") or "Gateway WebSocket RPC failed"))
+                return message.get("data", message)
+            return message
+
+    def rpc(self, method, params, timeout):
+        request_id = "intercom-ws-%d" % time.time_ns()
+        self.send_json({
+            "type": "req",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        })
+        return self._wait_response(request_id, timeout)
+
+def _rpc_http(gateway_url, method, params, timeout):
+    body = json.dumps({
+        "type": "req",
+        "id": "intercom-http-%d" % time.time_ns(),
+        "method": method,
+        "params": params,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        gateway_url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        if detail:
+            raise RuntimeError("HTTP %s: %s" % (exc.code, detail[:300]))
+        raise RuntimeError("HTTP %s: %s" % (exc.code, exc.reason))
+    if isinstance(data, dict) and data.get("type") == "res":
+        if data.get("ok") is False or data.get("error"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("payload")
+    if isinstance(data, dict) and "ok" in data:
+        if not data.get("ok"):
+            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
+        return data.get("data", data)
+    return data
+
+def gateway_rpc(method, params, timeout=None):
+    global _gateway_ws_client
+    effective_timeout = float(timeout or http_timeout)
+    errors = []
+    if _gateway_ws_client is None:
+        try:
+            _gateway_ws_client = _GatewayWsClient("127.0.0.1", gateway_port, _read_gateway_token(), effective_timeout)
+        except Exception as exc:
+            errors.append("ws connect: %s" % exc)
+            _gateway_ws_client = None
+    if _gateway_ws_client is not None:
+        try:
+            return _gateway_ws_client.rpc(method, params, effective_timeout)
+        except Exception as exc:
+            errors.append("ws rpc: %s" % exc)
+            try:
+                _gateway_ws_client.close()
+            finally:
+                _gateway_ws_client = None
+    try:
+        return _rpc_http(gateway_url, method, params, effective_timeout)
+    except Exception as exc:
+        errors.append("http: %s" % exc)
+        raise RuntimeError("; ".join(errors))
+`.trim();
+}
+
+function buildPowerShellGatewayRpcHelper(): string[] {
+  return [
+    'function Get-KTClawGatewayToken {',
+    '$token = $env:OPENCLAW_GATEWAY_TOKEN; if ([string]::IsNullOrWhiteSpace($token)) { $token = $env:KTCLAW_GATEWAY_TOKEN }; if (-not [string]::IsNullOrWhiteSpace($token)) { return [string]$token }',
+    "$paths = @((Join-Path $HOME '.openclaw\\openclaw.json'), (Join-Path $HOME '.config\\openclaw\\openclaw.json'))",
+    'foreach ($path in $paths) { try { if (-not (Test-Path -LiteralPath $path)) { continue }; $config = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json; if ($config.gateway.auth.token) { return [string]$config.gateway.auth.token }; if ($config.gateway.remote.token) { return [string]$config.gateway.remote.token } } catch {} }',
+    'return ""',
+    '}',
+    '$script:KTClawGatewayWs = $null',
+    'function New-KTClawTimeoutToken { param([int]$TimeoutSec) return [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))).Token }',
+    'function Send-KTClawGatewayWsJson { param([System.Net.WebSockets.ClientWebSocket]$Socket, $Value, [int]$TimeoutSec) $json = $Value | ConvertTo-Json -Depth 60 -Compress; $bytes = [Text.Encoding]::UTF8.GetBytes($json); $segment = [ArraySegment[byte]]::new($bytes); $Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult() }',
+    'function Receive-KTClawGatewayWsJson { param([System.Net.WebSockets.ClientWebSocket]$Socket, [int]$TimeoutSec) $buffer = New-Object byte[] 65536; $stream = New-Object System.IO.MemoryStream; do { $segment = [ArraySegment[byte]]::new($buffer); $result = $Socket.ReceiveAsync($segment, (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult(); if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { throw "WebSocket closed by Gateway" }; if ($result.Count -gt 0) { $stream.Write($buffer, 0, $result.Count) } } while (-not $result.EndOfMessage); $text = [Text.Encoding]::UTF8.GetString($stream.ToArray()); return ($text | ConvertFrom-Json) }',
+    'function Wait-KTClawGatewayWsResponse { param([System.Net.WebSockets.ClientWebSocket]$Socket, [string]$RequestId, [int]$TimeoutSec) $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec)); while ([DateTime]::UtcNow -lt $deadline) { $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)); $message = Receive-KTClawGatewayWsJson $Socket $remaining; if (-not ($message.PSObject.Properties.Name -contains "id") -or [string]$message.id -ne $RequestId) { continue }; if ($message.type -eq "res") { if (($message.PSObject.Properties.Name -contains "ok" -and $message.ok -eq $false) -or $message.error) { throw ($message.error | ConvertTo-Json -Depth 10 -Compress) }; return $message.payload }; if ($message.PSObject.Properties.Name -contains "ok") { if (-not $message.ok) { throw [string]$message.error }; return $message.data }; return $message }; throw "WebSocket RPC timeout: $RequestId" }',
+    'function Connect-KTClawGatewayWs { param([int]$TimeoutSec) $socket = [System.Net.WebSockets.ClientWebSocket]::new(); $socket.ConnectAsync([Uri]("ws://127.0.0.1:$gatewayPort/ws"), (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult(); $challenge = Receive-KTClawGatewayWsJson $socket $TimeoutSec; if ($challenge.type -ne "event" -or $challenge.event -ne "connect.challenge") { throw "WebSocket did not send connect.challenge" }; $connectId = "connect-" + [guid]::NewGuid().ToString(); Send-KTClawGatewayWsJson $socket @{ type = "req"; id = $connectId; method = "connect"; params = @{ minProtocol = 3; maxProtocol = 3; client = @{ id = "ktclaw-ssh-rpc"; displayName = "KTClaw SSH RPC"; version = "0.1.0"; platform = "win32"; mode = "intercom" }; auth = @{ token = (Get-KTClawGatewayToken) }; caps = @(); role = "operator"; scopes = @("operator.admin") } } $TimeoutSec; [void](Wait-KTClawGatewayWsResponse $socket $connectId $TimeoutSec); return $socket }',
+    'function Invoke-KTClawGatewayHttpRpc { param([string]$Method, $Params, [int]$TimeoutSec) $body = @{ type = "req"; id = ("intercom-http-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 60 -Compress; $response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec; if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }; if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }; return $response }',
+    'function Invoke-KTClawGatewayWsRpc { param([string]$Method, $Params, [int]$TimeoutSec) $requestId = "intercom-ws-" + [guid]::NewGuid().ToString(); Send-KTClawGatewayWsJson $script:KTClawGatewayWs @{ type = "req"; id = $requestId; method = $Method; params = $Params } $TimeoutSec; return (Wait-KTClawGatewayWsResponse $script:KTClawGatewayWs $requestId $TimeoutSec) }',
+    'function Invoke-KTClawGatewaySmartRpc { param([string]$Method, $Params, [int]$TimeoutSec) $errors = New-Object System.Collections.Generic.List[string]; if ($null -eq $script:KTClawGatewayWs -or $script:KTClawGatewayWs.State -ne [System.Net.WebSockets.WebSocketState]::Open) { try { $script:KTClawGatewayWs = Connect-KTClawGatewayWs $TimeoutSec } catch { [void]$errors.Add("ws connect: " + $_.Exception.Message); $script:KTClawGatewayWs = $null } }; if ($null -ne $script:KTClawGatewayWs) { try { return (Invoke-KTClawGatewayWsRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("ws rpc: " + $_.Exception.Message); try { $script:KTClawGatewayWs.Dispose() } catch {}; $script:KTClawGatewayWs = $null } }; try { return (Invoke-KTClawGatewayHttpRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("http: " + $_.Exception.Message); throw ($errors -join "; ") } }',
+  ];
+}
+
 function buildPosixRemoteGatewayCommand(
   route: IntercomRoute,
   message: string,
@@ -1618,30 +1893,10 @@ gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
 gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 sent = False
 
+${buildPythonGatewayRpcHelper()}
+
 def rpc(method, params, timeout=None):
-    body = json.dumps({
-        "type": "req",
-        "id": "intercom-%d" % time.time_ns(),
-        "method": method,
-        "params": params,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        gateway_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout or http_timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if isinstance(data, dict) and data.get("type") == "res":
-        if data.get("ok") is False or data.get("error"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("payload")
-    if isinstance(data, dict) and "ok" in data:
-        if not data.get("ok"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("data", data)
-    return data
+    return gateway_rpc(method, params, timeout or http_timeout)
 
 def messages_from(value):
     if isinstance(value, dict):
@@ -1684,12 +1939,15 @@ import base64
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
 gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
 gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 send_timeout = float(payload.get("sendHttpTimeoutSeconds") or 180)
+
+${buildPythonGatewayRpcHelper()}
 
 def write_log(value):
     try:
@@ -1699,29 +1957,7 @@ def write_log(value):
         pass
 
 def rpc(method, params, timeout=None):
-    body = json.dumps({
-        "type": "req",
-        "id": "intercom-send-%d" % time.time_ns(),
-        "method": method,
-        "params": params,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        gateway_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout or send_timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if isinstance(data, dict) and data.get("type") == "res":
-        if data.get("ok") is False or data.get("error"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("payload")
-    if isinstance(data, dict) and "ok" in data:
-        if not data.get("ok"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("data", data)
-    return data
+    return gateway_rpc(method, params, timeout or send_timeout)
 
 try:
     result = rpc("chat.send", {
@@ -1821,6 +2057,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_HISTORY_PAYLOAD_B64"]).decode("utf-8"))
@@ -1828,30 +2065,10 @@ gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
 gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
 
+${buildPythonGatewayRpcHelper()}
+
 def rpc(method, params, timeout=None):
-    body = json.dumps({
-        "type": "req",
-        "id": "intercom-history-%d" % time.time_ns(),
-        "method": method,
-        "params": params,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        gateway_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout or http_timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if isinstance(data, dict) and data.get("type") == "res":
-        if data.get("ok") is False or data.get("error"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("payload")
-    if isinstance(data, dict) and "ok" in data:
-        if not data.get("ok"):
-            raise RuntimeError(str(data.get("error") or "Gateway RPC failed"))
-        return data.get("data", data)
-    return data
+    return gateway_rpc(method, params, timeout or http_timeout)
 
 def messages_from(value):
     if isinstance(value, dict):
@@ -1914,12 +2131,9 @@ function buildWindowsRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}')) | ConvertFrom-Json`,
     `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
     '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
+    ...buildPowerShellGatewayRpcHelper(),
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
-    '$body = @{ type = "req"; id = ("intercom-history-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    `$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
-    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
-    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
-    'return $response',
+    `return (Invoke-KTClawGatewaySmartRpc $Method $Params ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})`,
     '}',
     'function Get-KTClawMessages { param($Value) if ($null -eq $Value) { return @() }; if ($Value.PSObject.Properties.Name -contains "messages") { return @($Value.messages) }; if ($Value.PSObject.Properties.Name -contains "history") { return @($Value.history) }; if ($Value -is [array]) { return @($Value) }; return @() }',
     'function Get-KTClawText { param($Content) if ($null -eq $Content) { return "" }; if ($Content -is [string]) { return $Content.Trim() }; if ($Content -is [array]) { $parts = @(); foreach ($item in $Content) { if ($item -is [string]) { $parts += $item } elseif ($item.PSObject.Properties.Name -contains "text") { $parts += [string]$item.text } elseif ($item.PSObject.Properties.Name -contains "content") { $parts += [string]$item.content } }; return ([string]::Join("", $parts)).Trim() }; if ($Content.PSObject.Properties.Name -contains "text") { return ([string]$Content.text).Trim() }; if ($Content.PSObject.Properties.Name -contains "content") { return ([string]$Content.content).Trim() }; return "" }',
@@ -1995,12 +2209,9 @@ function buildWindowsAutoOpenClawCommand(
     '$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64)) | ConvertFrom-Json',
     `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
     '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
+    ...buildPowerShellGatewayRpcHelper(),
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params, [int]$TimeoutSec)',
-    '$body = @{ type = "req"; id = ("intercom-send-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    '$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec',
-    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
-    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
-    'return $response',
+    'return (Invoke-KTClawGatewaySmartRpc $Method $Params $TimeoutSec)',
     '}',
     'function Write-KTClawRunLog { param($Value) try { $Value | ConvertTo-Json -Depth 50 -Compress | Set-Content -LiteralPath ([string]$payload.runLog) -Encoding UTF8 } catch {} }',
     'try {',
@@ -2020,12 +2231,9 @@ function buildWindowsAutoOpenClawCommand(
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${gatewayPayloadBase64}')) | ConvertFrom-Json`,
     `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
     '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
+    ...buildPowerShellGatewayRpcHelper(),
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
-    '$body = @{ type = "req"; id = ("intercom-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 40 -Compress',
-    `$response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType 'application/json' -Body $body -TimeoutSec ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS}`,
-    'if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }',
-    'if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }',
-    'return $response',
+    `return (Invoke-KTClawGatewaySmartRpc $Method $Params ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})`,
     '}',
     'function Get-KTClawMessages { param($Value) if ($null -eq $Value) { return @() }; if ($Value.PSObject.Properties.Name -contains "messages") { return @($Value.messages) }; if ($Value.PSObject.Properties.Name -contains "history") { return @($Value.history) }; if ($Value -is [array]) { return @($Value) }; return @() }',
     'function Get-KTClawText { param($Content) if ($null -eq $Content) { return "" }; if ($Content -is [string]) { return $Content.Trim() }; if ($Content -is [array]) { $parts = @(); foreach ($item in $Content) { if ($item -is [string]) { $parts += $item } elseif ($item.PSObject.Properties.Name -contains "text") { $parts += [string]$item.text } elseif ($item.PSObject.Properties.Name -contains "content") { $parts += [string]$item.content } }; return ([string]::Join("", $parts)).Trim() }; if ($Content.PSObject.Properties.Name -contains "text") { return ([string]$Content.text).Trim() }; if ($Content.PSObject.Properties.Name -contains "content") { return ([string]$Content.content).Trim() }; return "" }',
