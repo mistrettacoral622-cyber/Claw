@@ -544,6 +544,44 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('/opt/KTClaw/resources/openclaw/openclaw.mjs');
   });
 
+  it('passes configured OpenClaw commands to the Gateway CLI as argv for normal messages', async () => {
+    configStore.current = {
+      intercom: {
+        agents: {
+          ops: {
+            host: 'srv-c',
+            agent: 'ops',
+            transport: 'ssh',
+            sshUser: 'ubuntu',
+            remoteCommand: 'ELECTRON_RUN_AS_NODE=1 /opt/KTClaw/ktclaw /opt/KTClaw/resources/openclaw/openclaw.mjs',
+          },
+        },
+      },
+    };
+    const { sendIntercomMessage } = await import('@electron/services/intercom');
+
+    await sendIntercomMessage({
+      sender: 'dev',
+      target: 'ops',
+      message: 'ping',
+    });
+
+    const sshArgs = spawnMock.mock.calls[0][1] as string[];
+    expect(sshArgs.at(-1)).toContain('shell=False');
+    expect(sshArgs.at(-1)).toContain('_command_env_and_args');
+    expect(sshArgs.at(-1)).not.toContain('shell=True');
+    expect(sshArgs.at(-1)).not.toContain('shell_command =');
+    const payload = extractGatewayPayload(sshArgs.at(-1) ?? '');
+    expect(payload).toEqual(expect.objectContaining({
+      remoteCommandArgs: [
+        'ELECTRON_RUN_AS_NODE=1',
+        '/opt/KTClaw/ktclaw',
+        '/opt/KTClaw/resources/openclaw/openclaw.mjs',
+      ],
+      preferGatewayCli: true,
+    }));
+  });
+
   it('tries the remote Gateway fast path without cold-starting CLI for normal messages', async () => {
     configStore.current = {
       intercom: {
@@ -573,6 +611,10 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('"gateway"');
     expect(sshArgs.at(-1)).toContain('"call"');
     expect(sshArgs.at(-1)).toContain('preferGatewayCli');
+    expect(sshArgs.at(-1)).toContain('command_args + args');
+    expect(sshArgs.at(-1)).toContain('shell=False');
+    expect(sshArgs.at(-1)).not.toContain('shell=True');
+    expect(sshArgs.at(-1)).not.toContain('shell_command =');
     expect(sshArgs.at(-1)).toContain('Origin: http://127.0.0.1:%d');
     expect(sshArgs.at(-1)).toContain('"id": "webchat-ui"');
     expect(sshArgs.at(-1)).toContain('"mode": "webchat"');
