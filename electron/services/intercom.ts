@@ -1594,14 +1594,23 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
     sendHttpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
+    remoteCommand: resolveRemoteCommandPrefix(route),
+    preferGatewayCli: true,
   }), 'utf8').toString('base64');
 }
 
 function buildPythonGatewayRpcHelper(): string {
   return `
 import hashlib
+import json
+import os
+import shlex
 import socket
 import struct
+import subprocess
+import time
+import urllib.error
+import urllib.request
 
 _gateway_ws_client = None
 
@@ -1696,7 +1705,7 @@ class _GatewayWsClient:
                 "auth": {"token": self.token},
                 "caps": ["${GATEWAY_WEBCHAT_TOOL_EVENTS_CAP}"],
                 "role": "operator",
-                "scopes": ["operator.admin"],
+                "scopes": ["operator.read", "operator.write", "operator.admin"],
             },
         })
         self._wait_response(connect_id, timeout)
@@ -1826,10 +1835,69 @@ def _rpc_http(gateway_url, method, params, timeout):
         return data.get("data", data)
     return data
 
+def _parse_cli_json(stdout):
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(text[start:end + 1])
+    start = text.find("[")
+    end = text.rfind("]")
+    if start >= 0 and end > start:
+        return json.loads(text[start:end + 1])
+    raise RuntimeError("Gateway CLI returned non-JSON output: %s" % text[:300])
+
+def _rpc_cli(method, params, timeout):
+    command = str(payload.get("remoteCommand") or "openclaw").strip() or "openclaw"
+    token = _read_gateway_token()
+    timeout_ms = str(max(1000, int(float(timeout) * 1000)))
+    args = [
+        "gateway",
+        "call",
+        method,
+        "--url",
+        "ws://127.0.0.1:%d" % gateway_port,
+        "--timeout",
+        timeout_ms,
+        "--json",
+        "--params",
+        json.dumps(params, ensure_ascii=False, separators=(",", ":")),
+    ]
+    if token:
+        args.extend(["--token", token])
+    shell_command = command + " " + " ".join(shlex.quote(str(arg)) for arg in args)
+    env = os.environ.copy()
+    if token:
+        env["OPENCLAW_GATEWAY_TOKEN"] = token
+    completed = subprocess.run(
+        shell_command,
+        shell=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        timeout=max(1.0, float(timeout)) + 10.0,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "exit code %d" % completed.returncode).strip()
+        raise RuntimeError("Gateway CLI RPC failed: %s" % detail[:500])
+    return _parse_cli_json(completed.stdout)
+
 def gateway_rpc(method, params, timeout=None):
     global _gateway_ws_client
     effective_timeout = float(timeout or http_timeout)
     errors = []
+    if bool(payload.get("preferGatewayCli")):
+        try:
+            return _rpc_cli(method, params, effective_timeout)
+        except Exception as exc:
+            errors.append("cli: %s" % exc)
     if _gateway_ws_client is None:
         try:
             _gateway_ws_client = _GatewayWsClient("127.0.0.1", gateway_port, _read_gateway_token(), effective_timeout)
@@ -1861,15 +1929,18 @@ function buildPowerShellGatewayRpcHelper(): string[] {
     'foreach ($path in $paths) { try { if (-not (Test-Path -LiteralPath $path)) { continue }; $config = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json; if ($config.gateway.auth.token) { return [string]$config.gateway.auth.token }; if ($config.gateway.remote.token) { return [string]$config.gateway.remote.token } } catch {} }',
     'return ""',
     '}',
+    'function ConvertFrom-KTClawGatewayCliJson { param([string]$Text) $trimmed = ([string]$Text).Trim(); if ([string]::IsNullOrWhiteSpace($trimmed)) { return $null }; try { return ($trimmed | ConvertFrom-Json) } catch {}; $start = $trimmed.IndexOf("{"); $end = $trimmed.LastIndexOf("}"); if ($start -ge 0 -and $end -gt $start) { return ($trimmed.Substring($start, $end - $start + 1) | ConvertFrom-Json) }; $start = $trimmed.IndexOf("["); $end = $trimmed.LastIndexOf("]"); if ($start -ge 0 -and $end -gt $start) { return ($trimmed.Substring($start, $end - $start + 1) | ConvertFrom-Json) }; throw ("Gateway CLI returned non-JSON output: " + $trimmed.Substring(0, [Math]::Min(300, $trimmed.Length))) }',
+    'function Invoke-KTClawOpenClawCommand { param([object[]]$Arguments) $candidates = @(); $lastError = $null; $cmd = Get-Command openclaw -ErrorAction SilentlyContinue; if ($cmd) { $candidates += @{ File = [string]$cmd.Source; Prefix = @() } }; $candidatePaths = @((Join-Path (Get-Location) "node_modules\\.bin\\openclaw.cmd"), (Join-Path (Get-Location) "resources\\cli\\win32\\openclaw.cmd"), "$env:USERPROFILE\\Desktop\\claw\\KTClaw\\node_modules\\.bin\\openclaw.cmd", "$env:USERPROFILE\\Desktop\\KTClaw\\node_modules\\.bin\\openclaw.cmd", "$env:USERPROFILE\\Desktop\\ClawX-main\\node_modules\\.bin\\openclaw.cmd", "$env:LOCALAPPDATA\\Programs\\KTClaw\\resources\\cli\\win32\\openclaw.cmd", "$env:ProgramFiles\\KTClaw\\resources\\cli\\win32\\openclaw.cmd"); foreach ($path in $candidatePaths) { if ($path -and (Test-Path -LiteralPath $path)) { $candidates += @{ File = [string]$path; Prefix = @() } } }; $electronEntries = @(@{ Exe = "$env:LOCALAPPDATA\\Programs\\KTClaw\\KTClaw.exe"; Mjs = "$env:LOCALAPPDATA\\Programs\\KTClaw\\resources\\openclaw\\openclaw.mjs" }, @{ Exe = "$env:ProgramFiles\\KTClaw\\KTClaw.exe"; Mjs = "$env:ProgramFiles\\KTClaw\\resources\\openclaw\\openclaw.mjs" }); foreach ($entry in $electronEntries) { if ((Test-Path -LiteralPath $entry.Exe) -and (Test-Path -LiteralPath $entry.Mjs)) { $candidates += @{ File = [string]$entry.Exe; Prefix = @([string]$entry.Mjs); Electron = $true } } }; foreach ($candidate in $candidates) { $oldElectronRunAsNode = $env:ELECTRON_RUN_AS_NODE; try { if ($candidate.Electron) { $env:ELECTRON_RUN_AS_NODE = "1" }; $allArgs = @($candidate.Prefix) + @($Arguments); $output = & $candidate.File @allArgs 2>&1; $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }; $text = ($output | Out-String); if ($exitCode -eq 0) { return $text }; $lastError = "exit code " + $exitCode + ": " + $text.Trim() } catch { $lastError = $_.Exception.Message } finally { $env:ELECTRON_RUN_AS_NODE = $oldElectronRunAsNode } }; if (-not [string]::IsNullOrWhiteSpace($lastError)) { throw $lastError }; throw "KTClaw/OpenClaw command not found. Install openclaw globally or set Remote OpenClaw command to the KTClaw/OpenClaw executable path." }',
+    'function Invoke-KTClawGatewayCliRpc { param([string]$Method, $Params, [int]$TimeoutSec) $timeoutMs = [string]([Math]::Max(1000, [int]($TimeoutSec * 1000))); $paramsJson = $Params | ConvertTo-Json -Depth 60 -Compress; $arguments = @("gateway", "call", $Method, "--url", "ws://127.0.0.1:$gatewayPort", "--timeout", $timeoutMs, "--json", "--params", $paramsJson); $token = Get-KTClawGatewayToken; $oldToken = $env:OPENCLAW_GATEWAY_TOKEN; try { if (-not [string]::IsNullOrWhiteSpace($token)) { $env:OPENCLAW_GATEWAY_TOKEN = $token; $arguments += @("--token", $token) }; return (ConvertFrom-KTClawGatewayCliJson (Invoke-KTClawOpenClawCommand $arguments)) } finally { $env:OPENCLAW_GATEWAY_TOKEN = $oldToken } }',
     '$script:KTClawGatewayWs = $null',
     'function New-KTClawTimeoutToken { param([int]$TimeoutSec) return [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))).Token }',
     'function Send-KTClawGatewayWsJson { param([System.Net.WebSockets.ClientWebSocket]$Socket, $Value, [int]$TimeoutSec) $json = $Value | ConvertTo-Json -Depth 60 -Compress; $bytes = [Text.Encoding]::UTF8.GetBytes($json); $segment = [ArraySegment[byte]]::new($bytes); $Socket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult() }',
     'function Receive-KTClawGatewayWsJson { param([System.Net.WebSockets.ClientWebSocket]$Socket, [int]$TimeoutSec) $buffer = New-Object byte[] 65536; $stream = New-Object System.IO.MemoryStream; do { $segment = [ArraySegment[byte]]::new($buffer); $result = $Socket.ReceiveAsync($segment, (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult(); if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { throw "WebSocket closed by Gateway" }; if ($result.Count -gt 0) { $stream.Write($buffer, 0, $result.Count) } } while (-not $result.EndOfMessage); $text = [Text.Encoding]::UTF8.GetString($stream.ToArray()); return ($text | ConvertFrom-Json) }',
     'function Wait-KTClawGatewayWsResponse { param([System.Net.WebSockets.ClientWebSocket]$Socket, [string]$RequestId, [int]$TimeoutSec) $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec)); while ([DateTime]::UtcNow -lt $deadline) { $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)); $message = Receive-KTClawGatewayWsJson $Socket $remaining; if (-not ($message.PSObject.Properties.Name -contains "id") -or [string]$message.id -ne $RequestId) { continue }; if ($message.type -eq "res") { if (($message.PSObject.Properties.Name -contains "ok" -and $message.ok -eq $false) -or $message.error) { throw ($message.error | ConvertTo-Json -Depth 10 -Compress) }; return $message.payload }; if ($message.PSObject.Properties.Name -contains "ok") { if (-not $message.ok) { throw [string]$message.error }; return $message.data }; return $message }; throw "WebSocket RPC timeout: $RequestId" }',
-    `function Connect-KTClawGatewayWs { param([int]$TimeoutSec) $socket = [System.Net.WebSockets.ClientWebSocket]::new(); $socket.Options.SetRequestHeader("Origin", "http://127.0.0.1:$gatewayPort"); $socket.ConnectAsync([Uri]("ws://127.0.0.1:$gatewayPort/ws"), (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult(); $challenge = Receive-KTClawGatewayWsJson $socket $TimeoutSec; if ($challenge.type -ne "event" -or $challenge.event -ne "connect.challenge") { throw "WebSocket did not send connect.challenge" }; $connectId = "connect-" + [guid]::NewGuid().ToString(); Send-KTClawGatewayWsJson $socket @{ type = "req"; id = $connectId; method = "connect"; params = @{ minProtocol = 3; maxProtocol = 3; client = @{ id = "${GATEWAY_WEBCHAT_CLIENT_ID}"; displayName = "${GATEWAY_WEBCHAT_CLIENT_DISPLAY_NAME}"; version = "${GATEWAY_WEBCHAT_CLIENT_VERSION}"; platform = "win32"; mode = "${GATEWAY_WEBCHAT_CLIENT_MODE}" }; auth = @{ token = (Get-KTClawGatewayToken) }; caps = @("${GATEWAY_WEBCHAT_TOOL_EVENTS_CAP}"); role = "operator"; scopes = @("operator.admin") } } $TimeoutSec; [void](Wait-KTClawGatewayWsResponse $socket $connectId $TimeoutSec); return $socket }`,
+    `function Connect-KTClawGatewayWs { param([int]$TimeoutSec) $socket = [System.Net.WebSockets.ClientWebSocket]::new(); $socket.Options.SetRequestHeader("Origin", "http://127.0.0.1:$gatewayPort"); $socket.ConnectAsync([Uri]("ws://127.0.0.1:$gatewayPort/ws"), (New-KTClawTimeoutToken $TimeoutSec)).GetAwaiter().GetResult(); $challenge = Receive-KTClawGatewayWsJson $socket $TimeoutSec; if ($challenge.type -ne "event" -or $challenge.event -ne "connect.challenge") { throw "WebSocket did not send connect.challenge" }; $connectId = "connect-" + [guid]::NewGuid().ToString(); Send-KTClawGatewayWsJson $socket @{ type = "req"; id = $connectId; method = "connect"; params = @{ minProtocol = 3; maxProtocol = 3; client = @{ id = "${GATEWAY_WEBCHAT_CLIENT_ID}"; displayName = "${GATEWAY_WEBCHAT_CLIENT_DISPLAY_NAME}"; version = "${GATEWAY_WEBCHAT_CLIENT_VERSION}"; platform = "win32"; mode = "${GATEWAY_WEBCHAT_CLIENT_MODE}" }; auth = @{ token = (Get-KTClawGatewayToken) }; caps = @("${GATEWAY_WEBCHAT_TOOL_EVENTS_CAP}"); role = "operator"; scopes = @("operator.read", "operator.write", "operator.admin") } } $TimeoutSec; [void](Wait-KTClawGatewayWsResponse $socket $connectId $TimeoutSec); return $socket }`,
     'function Invoke-KTClawGatewayHttpRpc { param([string]$Method, $Params, [int]$TimeoutSec) $body = @{ type = "req"; id = ("intercom-http-" + [guid]::NewGuid().ToString()); method = $Method; params = $Params } | ConvertTo-Json -Depth 60 -Compress; $response = Invoke-RestMethod -Uri $gatewayUrl -Method Post -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec; if ($response.type -eq "res") { if (($response.PSObject.Properties.Name -contains "ok" -and $response.ok -eq $false) -or $response.error) { throw ($response.error | ConvertTo-Json -Depth 10 -Compress) }; return $response.payload }; if ($response.PSObject.Properties.Name -contains "ok") { if (-not $response.ok) { throw [string]$response.error }; return $response.data }; return $response }',
     'function Invoke-KTClawGatewayWsRpc { param([string]$Method, $Params, [int]$TimeoutSec) $requestId = "intercom-ws-" + [guid]::NewGuid().ToString(); Send-KTClawGatewayWsJson $script:KTClawGatewayWs @{ type = "req"; id = $requestId; method = $Method; params = $Params } $TimeoutSec; return (Wait-KTClawGatewayWsResponse $script:KTClawGatewayWs $requestId $TimeoutSec) }',
-    'function Invoke-KTClawGatewaySmartRpc { param([string]$Method, $Params, [int]$TimeoutSec) $errors = New-Object System.Collections.Generic.List[string]; if ($null -eq $script:KTClawGatewayWs -or $script:KTClawGatewayWs.State -ne [System.Net.WebSockets.WebSocketState]::Open) { try { $script:KTClawGatewayWs = Connect-KTClawGatewayWs $TimeoutSec } catch { [void]$errors.Add("ws connect: " + $_.Exception.Message); $script:KTClawGatewayWs = $null } }; if ($null -ne $script:KTClawGatewayWs) { try { return (Invoke-KTClawGatewayWsRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("ws rpc: " + $_.Exception.Message); try { $script:KTClawGatewayWs.Dispose() } catch {}; $script:KTClawGatewayWs = $null } }; try { return (Invoke-KTClawGatewayHttpRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("http: " + $_.Exception.Message); throw ($errors -join "; ") } }',
+    'function Invoke-KTClawGatewaySmartRpc { param([string]$Method, $Params, [int]$TimeoutSec) $errors = New-Object System.Collections.Generic.List[string]; if (($payload.PSObject.Properties.Name -contains "preferGatewayCli") -and [bool]$payload.preferGatewayCli) { try { return (Invoke-KTClawGatewayCliRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("cli: " + $_.Exception.Message) } }; if ($null -eq $script:KTClawGatewayWs -or $script:KTClawGatewayWs.State -ne [System.Net.WebSockets.WebSocketState]::Open) { try { $script:KTClawGatewayWs = Connect-KTClawGatewayWs $TimeoutSec } catch { [void]$errors.Add("ws connect: " + $_.Exception.Message); $script:KTClawGatewayWs = $null } }; if ($null -ne $script:KTClawGatewayWs) { try { return (Invoke-KTClawGatewayWsRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("ws rpc: " + $_.Exception.Message); try { $script:KTClawGatewayWs.Dispose() } catch {}; $script:KTClawGatewayWs = $null } }; try { return (Invoke-KTClawGatewayHttpRpc $Method $Params $TimeoutSec) } catch { [void]$errors.Add("http: " + $_.Exception.Message); throw ($errors -join "; ") } }',
   ];
 }
 
@@ -2052,6 +2123,8 @@ function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: strin
     beforeCount: Math.max(0, Math.floor(beforeCount)),
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
+    remoteCommand: resolveRemoteCommandPrefix(route),
+    preferGatewayCli: true,
   }), 'utf8').toString('base64');
 }
 
@@ -2250,7 +2323,7 @@ function buildWindowsAutoOpenClawCommand(
     "$runDir = Join-Path $HOME '.ktclaw\\intercom\\gateway-runs'",
     'New-Item -ItemType Directory -Force -Path $runDir | Out-Null',
     '$runLog = Join-Path $runDir ((([string]$payload.idempotencyKey) -replace "[\\\\/:*?`"<>|]", "_") + ".json")',
-    '$childPayload = @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; idempotencyKey = [string]$payload.idempotencyKey; runLog = $runLog; sendHttpTimeoutSeconds = [int]$payload.sendHttpTimeoutSeconds } | ConvertTo-Json -Depth 20 -Compress',
+    '$childPayload = @{ sessionKey = [string]$payload.sessionKey; message = [string]$payload.message; idempotencyKey = [string]$payload.idempotencyKey; runLog = $runLog; sendHttpTimeoutSeconds = [int]$payload.sendHttpTimeoutSeconds; gatewayPort = [int]$payload.gatewayPort; preferGatewayCli = $true } | ConvertTo-Json -Depth 20 -Compress',
     '$env:KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($childPayload))',
     `Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", "${gatewaySendChildCommand}") -WindowStyle Hidden`,
     '$gatewayStarted = $true',

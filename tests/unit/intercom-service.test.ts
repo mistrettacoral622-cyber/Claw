@@ -568,10 +568,15 @@ describe('intercom service', () => {
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64');
     expect(sshArgs.at(-1)).toContain('GET /ws HTTP/1.1');
+    expect(sshArgs.at(-1)).toContain('def _rpc_cli');
+    expect(sshArgs.at(-1)).toContain('"gateway"');
+    expect(sshArgs.at(-1)).toContain('"call"');
+    expect(sshArgs.at(-1)).toContain('preferGatewayCli');
     expect(sshArgs.at(-1)).toContain('Origin: http://127.0.0.1:%d');
     expect(sshArgs.at(-1)).toContain('"id": "webchat-ui"');
     expect(sshArgs.at(-1)).toContain('"mode": "webchat"');
     expect(sshArgs.at(-1)).toContain('"caps": ["tool-events"]');
+    expect(sshArgs.at(-1)).toContain('"scopes": ["operator.read", "operator.write", "operator.admin"]');
     expect(sshArgs.at(-1)).toContain('normal Intercom messages no longer cold-start openclaw agent automatically');
     expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
     expect(sshArgs.at(-1)).not.toContain(' agent --local ');
@@ -837,10 +842,15 @@ describe('intercom service', () => {
     expect(retryArgs.at(-1)).toContain('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand');
     const windowsScript = extractPowerShellEncodedCommand(retryArgs.at(-1) ?? '');
     expect(windowsScript).toContain('Connect-KTClawGatewayWs');
+    expect(windowsScript).toContain('Invoke-KTClawGatewayCliRpc');
+    expect(windowsScript).toContain('"gateway", "call"');
+    expect(windowsScript).toContain('preferGatewayCli');
+    expect(windowsScript).toContain('gatewayPort = [int]$payload.gatewayPort');
     expect(windowsScript).toContain('SetRequestHeader("Origin", "http://127.0.0.1:$gatewayPort")');
     expect(windowsScript).toContain('id = "webchat-ui"');
     expect(windowsScript).toContain('mode = "webchat"');
     expect(windowsScript).toContain('caps = @("tool-events")');
+    expect(windowsScript).toContain('scopes = @("operator.read", "operator.write", "operator.admin")');
   });
 
   it('retries intercom messages with a clean session when stale history contains image_url content', async () => {
@@ -924,10 +934,15 @@ describe('intercom service', () => {
     const remoteCommand = sshClientInstances[0]?.exec.mock.calls[0]?.[0] as string;
     expect(remoteCommand).toContain('gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port');
     expect(remoteCommand).toContain('GET /ws HTTP/1.1');
+    expect(remoteCommand).toContain('def _rpc_cli');
+    expect(remoteCommand).toContain('"gateway"');
+    expect(remoteCommand).toContain('"call"');
+    expect(remoteCommand).toContain('preferGatewayCli');
     expect(remoteCommand).toContain('Origin: http://127.0.0.1:%d');
     expect(remoteCommand).toContain('"id": "webchat-ui"');
     expect(remoteCommand).toContain('"mode": "webchat"');
     expect(remoteCommand).toContain('"caps": ["tool-events"]');
+    expect(remoteCommand).toContain('"scopes": ["operator.read", "operator.write", "operator.admin"]');
     const payload = extractGatewayPayload(remoteCommand);
     expect(payload).toEqual(expect.objectContaining({
       sessionKey: 'agent:ops:intercom',
