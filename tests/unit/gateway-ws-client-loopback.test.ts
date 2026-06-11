@@ -46,6 +46,31 @@ vi.mock('ws', () => {
 });
 
 describe('Gateway WebSocket loopback URL', () => {
+  it('uses the control UI handshake identity for Gateway RPC sockets', async () => {
+    const { buildGatewayConnectFrame } = await import('@electron/gateway/ws-client');
+
+    const { frame } = buildGatewayConnectFrame({
+      challengeNonce: 'nonce',
+      token: 'token',
+      deviceIdentity: null,
+      platform: 'linux',
+    });
+
+    expect(frame).toEqual(expect.objectContaining({
+      type: 'req',
+      method: 'connect',
+      params: expect.objectContaining({
+        client: expect.objectContaining({
+          id: 'openclaw-control-ui',
+          displayName: 'KTClaw UI',
+          version: '1.0.0',
+          mode: 'webchat',
+        }),
+        caps: ['tool-events'],
+      }),
+    }));
+  });
+
   it('probes the IPv4 loopback address instead of localhost', async () => {
     const { probeGatewayReady } = await import('@electron/gateway/ws-client');
 
