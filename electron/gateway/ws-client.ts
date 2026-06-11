@@ -13,11 +13,10 @@ export const DEFAULT_GATEWAY_READY_INTERVAL_MS = 250;
 export const DEFAULT_GATEWAY_READY_PROBE_TIMEOUT_MS = 1000;
 export const DEFAULT_GATEWAY_READY_MAX_RETRIES = process.platform === 'win32' ? 144 : DEFAULT_GATEWAY_READY_RETRIES;
 export const LOCAL_GATEWAY_WS_HOST = '127.0.0.1';
-const GATEWAY_CONTROL_UI_CLIENT_ID = 'openclaw-control-ui';
-const GATEWAY_CONTROL_UI_CLIENT_DISPLAY_NAME = 'KTClaw UI';
-const GATEWAY_CONTROL_UI_CLIENT_VERSION = '1.0.0';
-const GATEWAY_CONTROL_UI_CLIENT_MODE = 'webchat';
-const GATEWAY_CONTROL_UI_TOOL_EVENTS_CAP = 'tool-events';
+const GATEWAY_BACKEND_CLIENT_ID = 'gateway-client';
+const GATEWAY_BACKEND_CLIENT_DISPLAY_NAME = 'KTClaw';
+const GATEWAY_BACKEND_CLIENT_VERSION = '0.1.0';
+const GATEWAY_BACKEND_CLIENT_MODE = 'backend';
 
 function buildLocalGatewayWsUrl(port: number): string {
   return `ws://${LOCAL_GATEWAY_WS_HOST}:${port}/ws`;
@@ -152,8 +151,8 @@ export function buildGatewayConnectFrame(options: {
   const role = 'operator';
   const scopes = ['operator.admin'];
   const signedAtMs = Date.now();
-  const clientId = GATEWAY_CONTROL_UI_CLIENT_ID;
-  const clientMode = GATEWAY_CONTROL_UI_CLIENT_MODE;
+  const clientId = GATEWAY_BACKEND_CLIENT_ID;
+  const clientMode = GATEWAY_BACKEND_CLIENT_MODE;
 
   const device = (() => {
     if (!options.deviceIdentity) return undefined;
@@ -189,15 +188,15 @@ export function buildGatewayConnectFrame(options: {
         maxProtocol: 3,
         client: {
           id: clientId,
-          displayName: GATEWAY_CONTROL_UI_CLIENT_DISPLAY_NAME,
-          version: GATEWAY_CONTROL_UI_CLIENT_VERSION,
+          displayName: GATEWAY_BACKEND_CLIENT_DISPLAY_NAME,
+          version: GATEWAY_BACKEND_CLIENT_VERSION,
           platform: options.platform,
           mode: clientMode,
         },
         auth: {
           token: options.token,
         },
-        caps: [GATEWAY_CONTROL_UI_TOOL_EVENTS_CAP],
+        caps: [],
         role,
         scopes,
         device,
