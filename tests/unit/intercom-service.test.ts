@@ -501,6 +501,7 @@ describe('intercom service', () => {
       sessionKey: 'agent:ops:intercom',
       message: '[from agent dev] 更新头像',
       gatewayPort: 18789,
+      remoteCommandArgs: expect.any(Array),
     }));
   });
 
@@ -577,6 +578,11 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('"mode": "webchat"');
     expect(sshArgs.at(-1)).toContain('"caps": ["tool-events"]');
     expect(sshArgs.at(-1)).toContain('"scopes": ["operator.read", "operator.write", "operator.admin"]');
+    const payload = extractGatewayPayload(sshArgs.at(-1) ?? '');
+    expect(payload).toEqual(expect.objectContaining({
+      remoteCommandArgs: expect.arrayContaining(['sh', '-lc']),
+      preferGatewayCli: true,
+    }));
     expect(sshArgs.at(-1)).toContain('normal Intercom messages no longer cold-start openclaw agent automatically');
     expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
     expect(sshArgs.at(-1)).not.toContain(' agent --local ');
@@ -610,6 +616,7 @@ describe('intercom service', () => {
       gatewayPort: 24567,
       sessionKey: 'agent:ops:intercom',
       timeoutSeconds: 30,
+      remoteCommandArgs: expect.arrayContaining(['sh', '-lc']),
     }));
     expect(sshArgs.at(-1)).toContain('127.0.0.1:24567');
   });
@@ -947,6 +954,7 @@ describe('intercom service', () => {
     expect(payload).toEqual(expect.objectContaining({
       sessionKey: 'agent:ops:intercom',
       gatewayPort: 18789,
+      remoteCommandArgs: expect.arrayContaining(['sh', '-lc']),
     }));
     expect(remoteCommand).not.toContain('ktclaw-intercom');
   });

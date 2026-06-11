@@ -1585,6 +1585,11 @@ function buildRemoteOpenClawCommand(route: IntercomRoute, message: string, sessi
   return `${remoteCommandPrefix} ${remoteArgs.map(quotePosix).join(' ')}`;
 }
 
+function resolveRemoteCommandArgs(route: IntercomRoute): string[] {
+  const commandParts = splitPosixCommand(resolveRemoteCommandPrefix(route));
+  return commandParts.length > 0 ? commandParts : [DEFAULT_REMOTE_OPENCLAW_COMMAND];
+}
+
 function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessionId: string): string {
   return Buffer.from(JSON.stringify({
     sessionKey: buildIntercomSessionKey(route, sessionId),
@@ -1595,6 +1600,7 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
     sendHttpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
     remoteCommand: resolveRemoteCommandPrefix(route),
+    remoteCommandArgs: resolveRemoteCommandArgs(route),
     preferGatewayCli: true,
   }), 'utf8').toString('base64');
 }
@@ -1604,7 +1610,6 @@ function buildPythonGatewayRpcHelper(): string {
 import hashlib
 import json
 import os
-import shlex
 import socket
 import struct
 import subprocess
@@ -1853,8 +1858,34 @@ def _parse_cli_json(stdout):
         return json.loads(text[start:end + 1])
     raise RuntimeError("Gateway CLI returned non-JSON output: %s" % text[:300])
 
+def _is_env_assignment(value):
+    if not isinstance(value, str) or "=" not in value:
+        return False
+    name = value.split("=", 1)[0]
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in name)
+
+def _command_env_and_args(command_args):
+    env = os.environ.copy()
+    resolved = []
+    for value in command_args:
+        text = str(value)
+        if not resolved and _is_env_assignment(text):
+            key, env_value = text.split("=", 1)
+            env[key] = env_value
+            continue
+        if text:
+            resolved.append(text)
+    return env, (resolved or ["openclaw"])
+
 def _rpc_cli(method, params, timeout):
-    command = str(payload.get("remoteCommand") or "openclaw").strip() or "openclaw"
+    command_args = payload.get("remoteCommandArgs")
+    if not isinstance(command_args, list) or not command_args:
+        command = str(payload.get("remoteCommand") or "openclaw").strip() or "openclaw"
+        command_args = [command]
+    command_args = [str(arg) for arg in command_args if str(arg)]
+    env, command_args = _command_env_and_args(command_args)
     token = _read_gateway_token()
     timeout_ms = str(max(1000, int(float(timeout) * 1000)))
     args = [
@@ -1871,19 +1902,21 @@ def _rpc_cli(method, params, timeout):
     ]
     if token:
         args.extend(["--token", token])
-    shell_command = command + " " + " ".join(shlex.quote(str(arg)) for arg in args)
-    env = os.environ.copy()
     if token:
         env["OPENCLAW_GATEWAY_TOKEN"] = token
-    completed = subprocess.run(
-        shell_command,
-        shell=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        timeout=max(1.0, float(timeout)) + 10.0,
-    )
+    process_timeout = max(1.0, float(timeout)) + 10.0
+    try:
+        completed = subprocess.run(
+            command_args + args,
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=process_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Gateway CLI RPC timed out after %.1f seconds" % process_timeout)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "exit code %d" % completed.returncode).strip()
         raise RuntimeError("Gateway CLI RPC failed: %s" % detail[:500])
@@ -2124,6 +2157,7 @@ function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: strin
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
     remoteCommand: resolveRemoteCommandPrefix(route),
+    remoteCommandArgs: resolveRemoteCommandArgs(route),
     preferGatewayCli: true,
   }), 'utf8').toString('base64');
 }
