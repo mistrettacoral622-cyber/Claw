@@ -251,6 +251,7 @@ const INTERCOM_DESKTOP_SCREENSHOT_ACCEPT_WAIT_SECONDS = 3;
 const INTERCOM_DESKTOP_SCREENSHOT_WAIT_SECONDS = 15;
 const INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS = 30;
 const INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS = 5;
+const INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS = 20;
 const INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS = 180;
 const INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE = 87;
 const DEFAULT_REMOTE_GATEWAY_PORT = 18789;
@@ -1597,6 +1598,7 @@ function buildRemoteGatewayPayload(route: IntercomRoute, message: string, sessio
     idempotencyKey: `intercom-${randomUUID()}`,
     timeoutSeconds: INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS,
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+    historyTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS,
     sendHttpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_SEND_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
     remoteCommand: resolveRemoteCommandPrefix(route),
@@ -1904,7 +1906,7 @@ def _rpc_cli(method, params, timeout):
         args.extend(["--token", token])
     if token:
         env["OPENCLAW_GATEWAY_TOKEN"] = token
-    process_timeout = max(1.0, float(timeout)) + 10.0
+    process_timeout = max(1.0, float(timeout)) + 2.0
     try:
         completed = subprocess.run(
             command_args + args,
@@ -1998,6 +2000,7 @@ import uuid
 
 payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_PAYLOAD_B64"]).decode("utf-8"))
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
+history_timeout = float(payload.get("historyTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS})
 poll_timeout = float(payload.get("timeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_ACK_WAIT_SECONDS})
 gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
 gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
@@ -2035,9 +2038,13 @@ def text_from_content(content):
 try:
     session_key = payload["sessionKey"]
     history_params = {"sessionKey": session_key, "limit": 500}
-    before = messages_from(rpc("chat.history", history_params))
+    history_warning = None
+    try:
+        before = messages_from(rpc("chat.history", history_params, history_timeout))
+    except Exception as exc:
+        history_warning = "pre-send history unavailable: %s" % exc
+        before = []
     before_count = len(before)
-    sent = True
     run_dir = os.path.expanduser("~/.ktclaw/intercom/gateway-runs")
     os.makedirs(run_dir, exist_ok=True)
     run_log = os.path.join(run_dir, "%s.json" % payload["idempotencyKey"].replace("/", "_"))
@@ -2090,11 +2097,16 @@ except Exception as exc:
         env=child_env,
         start_new_session=True,
     )
+    sent = True
     deadline = time.time() + poll_timeout
     latest = before
     while time.time() < deadline:
         time.sleep(1.0)
-        latest = messages_from(rpc("chat.history", history_params))
+        try:
+            latest = messages_from(rpc("chat.history", history_params, history_timeout))
+        except Exception as exc:
+            history_warning = "post-send history unavailable: %s" % exc
+            break
         new_messages = latest[before_count:] if len(latest) >= before_count else latest
         for message in new_messages:
             if isinstance(message, dict) and message.get("role") == "assistant" and text_from_content(message.get("content")):
@@ -2107,7 +2119,7 @@ except Exception as exc:
     print(json.dumps({
         "messages": latest[before_count:] if len(latest) >= before_count else latest,
         "result": {"dispatched": True, "runLog": run_log},
-        "meta": {"via": "remote-gateway", "status": "running", "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest)},
+        "meta": {"via": "remote-gateway", "status": "running", "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest), "warning": history_warning},
     }, ensure_ascii=False))
 except Exception as exc:
     if not sent:
@@ -2155,6 +2167,7 @@ function buildRemoteGatewayHistoryPayload(route: IntercomRoute, sessionId: strin
     sessionKey: buildIntercomSessionKey(route, sessionId),
     beforeCount: Math.max(0, Math.floor(beforeCount)),
     httpTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS,
+    historyTimeoutSeconds: INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS,
     gatewayPort: resolveRemoteGatewayPort(route),
     remoteCommand: resolveRemoteCommandPrefix(route),
     remoteCommandArgs: resolveRemoteCommandArgs(route),
@@ -2177,6 +2190,7 @@ payload = json.loads(base64.b64decode(os.environ["KTCLAW_INTERCOM_GATEWAY_HISTOR
 gateway_port = int(payload.get("gatewayPort") or ${DEFAULT_REMOTE_GATEWAY_PORT})
 gateway_url = "http://127.0.0.1:%d/rpc" % gateway_port
 http_timeout = float(payload.get("httpTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HTTP_TIMEOUT_SECONDS})
+history_timeout = float(payload.get("historyTimeoutSeconds") or ${INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS})
 
 ${buildPythonGatewayRpcHelper()}
 
@@ -2210,7 +2224,7 @@ def text_from_content(content):
 try:
     session_key = payload["sessionKey"]
     before_count = int(payload.get("beforeCount") or 0)
-    latest = messages_from(rpc("chat.history", {"sessionKey": session_key, "limit": 500}))
+    latest = messages_from(rpc("chat.history", {"sessionKey": session_key, "limit": 500}, history_timeout))
     new_messages = latest[before_count:] if len(latest) >= before_count else latest
     status = "running"
     for message in new_messages:
@@ -2222,8 +2236,13 @@ try:
         "meta": {"via": "remote-gateway-poll", "status": status, "beforeCount": before_count, "sessionKey": session_key, "messageCount": len(latest)},
     }, ensure_ascii=False))
 except Exception as exc:
-    sys.stderr.write("Remote Gateway history unavailable: %s\\n" % exc)
-    sys.exit(${INTERCOM_REMOTE_GATEWAY_FALLBACK_EXIT_CODE})
+    session_key = str(payload.get("sessionKey") or "")
+    before_count = int(payload.get("beforeCount") or 0)
+    print(json.dumps({
+        "messages": [],
+        "meta": {"via": "remote-gateway-poll", "status": "running", "beforeCount": before_count, "sessionKey": session_key, "messageCount": before_count, "warning": "history unavailable: %s" % exc},
+    }, ensure_ascii=False))
+    sys.exit(0)
 `;
   const script = [
     `if command -v python3 >/dev/null 2>&1; then KTCLAW_INTERCOM_GATEWAY_HISTORY_PAYLOAD_B64=${quotePosix(payloadBase64)} python3 - <<'PY'`,
@@ -2243,6 +2262,7 @@ function buildWindowsRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId
     "$ErrorActionPreference = 'Stop'",
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}')) | ConvertFrom-Json`,
     `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
+    `$historyTimeoutSec = if ($payload.PSObject.Properties.Name -contains "historyTimeoutSeconds") { [int]$payload.historyTimeoutSeconds } else { ${INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS} }`,
     '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
     ...buildPowerShellGatewayRpcHelper(),
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
@@ -2253,11 +2273,13 @@ function buildWindowsRemoteGatewayHistoryCommand(route: IntercomRoute, sessionId
     'function Get-KTClawNewMessages { param($Messages, [int]$Start) $items = @($Messages); if ($items.Count -le $Start) { return @() }; return @($items[$Start..($items.Count - 1)]) }',
     '$beforeCount = [int]$payload.beforeCount',
     '$sessionKey = [string]$payload.sessionKey',
-    '$latest = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" @{ sessionKey = $sessionKey; limit = 500 }))',
-    '$newMessages = @(Get-KTClawNewMessages $latest $beforeCount)',
+    '$historyWarning = $null',
+    'try { $latest = @(Get-KTClawMessages (Invoke-KTClawGatewaySmartRpc "chat.history" @{ sessionKey = $sessionKey; limit = 500 } $historyTimeoutSec)) } catch { $historyWarning = "history unavailable: " + $_.Exception.Message; $latest = @() }',
+    '$newMessages = if ($historyWarning) { @() } else { @(Get-KTClawNewMessages $latest $beforeCount) }',
     '$status = "running"',
     'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { $status = "completed"; break } }',
-    '@{ messages = $newMessages; meta = @{ via = "remote-gateway-poll"; status = $status; beforeCount = $beforeCount; sessionKey = $sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress',
+    '$messageCount = if ($historyWarning) { $beforeCount } else { $latest.Count }',
+    '@{ messages = $newMessages; meta = @{ via = "remote-gateway-poll"; status = $status; beforeCount = $beforeCount; sessionKey = $sessionKey; messageCount = $messageCount; warning = $historyWarning } } | ConvertTo-Json -Depth 50 -Compress',
   ].join('; ');
   return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodePowerShellCommand(script)}`;
 }
@@ -2343,6 +2365,7 @@ function buildWindowsAutoOpenClawCommand(
     'try {',
     `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${gatewayPayloadBase64}')) | ConvertFrom-Json`,
     `$gatewayPort = if ($payload.PSObject.Properties.Name -contains "gatewayPort") { [int]$payload.gatewayPort } else { ${DEFAULT_REMOTE_GATEWAY_PORT} }`,
+    `$historyTimeoutSec = if ($payload.PSObject.Properties.Name -contains "historyTimeoutSeconds") { [int]$payload.historyTimeoutSeconds } else { ${INTERCOM_REMOTE_GATEWAY_HISTORY_TIMEOUT_SECONDS} }`,
     '$gatewayUrl = "http://127.0.0.1:$gatewayPort/rpc"',
     ...buildPowerShellGatewayRpcHelper(),
     'function Invoke-KTClawGatewayRpc { param([string]$Method, $Params)',
@@ -2352,7 +2375,8 @@ function buildWindowsAutoOpenClawCommand(
     'function Get-KTClawText { param($Content) if ($null -eq $Content) { return "" }; if ($Content -is [string]) { return $Content.Trim() }; if ($Content -is [array]) { $parts = @(); foreach ($item in $Content) { if ($item -is [string]) { $parts += $item } elseif ($item.PSObject.Properties.Name -contains "text") { $parts += [string]$item.text } elseif ($item.PSObject.Properties.Name -contains "content") { $parts += [string]$item.content } }; return ([string]::Join("", $parts)).Trim() }; if ($Content.PSObject.Properties.Name -contains "text") { return ([string]$Content.text).Trim() }; if ($Content.PSObject.Properties.Name -contains "content") { return ([string]$Content.content).Trim() }; return "" }',
     'function Get-KTClawNewMessages { param($Messages, [int]$Start) $items = @($Messages); if ($items.Count -le $Start) { return @() }; return @($items[$Start..($items.Count - 1)]) }',
     '$historyParams = @{ sessionKey = [string]$payload.sessionKey; limit = 500 }',
-    '$before = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
+    '$historyWarning = $null',
+    'try { $before = @(Get-KTClawMessages (Invoke-KTClawGatewaySmartRpc "chat.history" $historyParams $historyTimeoutSec)) } catch { $historyWarning = "pre-send history unavailable: " + $_.Exception.Message; $before = @() }',
     '$beforeCount = $before.Count',
     "$runDir = Join-Path $HOME '.ktclaw\\intercom\\gateway-runs'",
     'New-Item -ItemType Directory -Force -Path $runDir | Out-Null',
@@ -2365,12 +2389,12 @@ function buildWindowsAutoOpenClawCommand(
     '$latest = $before',
     'while ([DateTime]::UtcNow -lt $deadline) {',
     'Start-Sleep -Seconds 1',
-    '$latest = @(Get-KTClawMessages (Invoke-KTClawGatewayRpc "chat.history" $historyParams))',
+    'try { $latest = @(Get-KTClawMessages (Invoke-KTClawGatewaySmartRpc "chat.history" $historyParams $historyTimeoutSec)) } catch { $historyWarning = "post-send history unavailable: " + $_.Exception.Message; break }',
     '$newMessages = @(Get-KTClawNewMessages $latest $beforeCount)',
-    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { @{ messages = $newMessages; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "completed"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress; exit 0 } }',
+    'foreach ($messageItem in $newMessages) { if (($messageItem.PSObject.Properties.Name -contains "role") -and $messageItem.role -eq "assistant" -and (Get-KTClawText $messageItem.content)) { @{ messages = $newMessages; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "completed"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count; warning = $historyWarning } } | ConvertTo-Json -Depth 50 -Compress; exit 0 } }',
     '}',
     '$remaining = @(Get-KTClawNewMessages $latest $beforeCount)',
-    '@{ messages = $remaining; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "running"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count } } | ConvertTo-Json -Depth 50 -Compress',
+    '@{ messages = $remaining; result = @{ dispatched = $true; runLog = $runLog }; meta = @{ via = "remote-gateway"; status = "running"; beforeCount = $beforeCount; sessionKey = [string]$payload.sessionKey; messageCount = $latest.Count; warning = $historyWarning } } | ConvertTo-Json -Depth 50 -Compress',
     'exit 0',
     '} catch {',
     'if ($gatewayStarted) { @{ messages = @(@{ role = "assistant"; content = ("Remote Gateway run failed: " + $_.Exception.Message) }); meta = @{ via = "remote-gateway"; error = $_.Exception.Message } } | ConvertTo-Json -Depth 20 -Compress; exit 0 }',

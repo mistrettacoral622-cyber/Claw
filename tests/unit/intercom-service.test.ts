@@ -501,6 +501,7 @@ describe('intercom service', () => {
       sessionKey: 'agent:ops:intercom',
       message: '[from agent dev] 更新头像',
       gatewayPort: 18789,
+      historyTimeoutSeconds: 20,
       remoteCommandArgs: expect.any(Array),
     }));
   });
@@ -615,6 +616,8 @@ describe('intercom service', () => {
     expect(sshArgs.at(-1)).toContain('shell=False');
     expect(sshArgs.at(-1)).not.toContain('shell=True');
     expect(sshArgs.at(-1)).not.toContain('shell_command =');
+    expect(sshArgs.at(-1)).toContain('pre-send history unavailable');
+    expect(sshArgs.at(-1)).toContain('post-send history unavailable');
     expect(sshArgs.at(-1)).toContain('Origin: http://127.0.0.1:%d');
     expect(sshArgs.at(-1)).toContain('"id": "webchat-ui"');
     expect(sshArgs.at(-1)).toContain('"mode": "webchat"');
@@ -658,6 +661,7 @@ describe('intercom service', () => {
       gatewayPort: 24567,
       sessionKey: 'agent:ops:intercom',
       timeoutSeconds: 30,
+      historyTimeoutSeconds: 20,
       remoteCommandArgs: expect.arrayContaining(['sh', '-lc']),
     }));
     expect(sshArgs.at(-1)).toContain('127.0.0.1:24567');
@@ -745,6 +749,8 @@ describe('intercom service', () => {
     expect(result.stdout).toContain('pong');
     const sshArgs = spawnMock.mock.calls[0][1] as string[];
     expect(sshArgs.at(-1)).toContain('chat.history');
+    expect(sshArgs.at(-1)).toContain('history unavailable');
+    expect(sshArgs.at(-1)).toContain('sys.exit(0)');
     expect(sshArgs.at(-1)).not.toContain(' agent --local ');
     expect(sshArgs.at(-1)).not.toContain('ktclaw-intercom');
   });
@@ -895,6 +901,9 @@ describe('intercom service', () => {
     expect(windowsScript).toContain('"gateway", "call"');
     expect(windowsScript).toContain('preferGatewayCli');
     expect(windowsScript).toContain('gatewayPort = [int]$payload.gatewayPort');
+    expect(windowsScript).toContain('historyTimeoutSeconds');
+    expect(windowsScript).toContain('pre-send history unavailable');
+    expect(windowsScript).toContain('post-send history unavailable');
     expect(windowsScript).toContain('SetRequestHeader("Origin", "http://127.0.0.1:$gatewayPort")');
     expect(windowsScript).toContain('id = "webchat-ui"');
     expect(windowsScript).toContain('mode = "webchat"');
@@ -996,6 +1005,7 @@ describe('intercom service', () => {
     expect(payload).toEqual(expect.objectContaining({
       sessionKey: 'agent:ops:intercom',
       gatewayPort: 18789,
+      historyTimeoutSeconds: 20,
       remoteCommandArgs: expect.arrayContaining(['sh', '-lc']),
     }));
     expect(remoteCommand).not.toContain('ktclaw-intercom');
